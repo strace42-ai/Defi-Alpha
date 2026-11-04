@@ -1,0 +1,21 @@
+{
+  "_about": "Размеченный контрольный набор РЕАЛЬНЫХ контрактов для оценки ложных включений/исключений. Ожидания — из проверяемых фактов (дата первых пулов, листинг DefiLlama), записаны 2026-11-04. Возраст зависит от даты запуска: ожидания по возрасту пересчитываются от поля first_trade_known.",
+  "items": [
+    {"chain": "robinhood", "address": "0xb63d07CEf74bE747231d601bb2FAa6B252c68106", "label": "FABLES (Fables, ve(3,3) DEX)",
+     "expect": {"defi_link": "fables", "first_trade_known": "2026-10-20", "mcap_under_5m": true}},
+    {"chain": "robinhood", "address": "0x451b42a15100c340ca12f7c66de06fac5ea2d751", "label": "BOW (Longbow, lending)",
+     "expect": {"defi_link": "longbow", "first_trade_known": "2026-08-08", "drawdown_under_86": true}},
+    {"chain": "robinhood", "address": "0xad9e5fb798d12663911388a8d25eba21d6141401", "label": "другой «LONGBOW (BOW)»",
+     "expect": {"defi_link": null}},
+    {"chain": "robinhood", "address": "0x485743a9bc4aa28dbbeaf35b456cd46fe2622874", "label": "другой контракт из выдачи «Longbow»",
+     "expect": {"defi_link": null}},
+    {"chain": "robinhood", "address": "0x3a3494fe36e0504b321deac988608a2b2b7ac29f", "label": "MADAPE (новый пул с launchpad, мем)",
+     "expect": {"defi_link": null, "utility_pass": false}},
+    {"chain": "base", "address": "0x940181a94a35a4569e4529a3cdfb74e38fd98631", "label": "AERO (старый токен, 2023)",
+     "expect": {"defi_link": "aerodrome", "age_over_90": true}},
+    {"chain": "optimism", "address": "0x9560e827af36c94d2ac33a39bce1fe78631088db", "label": "VELO v2 (старый токен)",
+     "expect": {"age_over_90": true}},
+    {"chain": "bsc", "address": "0xf4c8e32eadec4bfe97e0f595add0f4450a863a11", "label": "THE (THENA, старый токен)",
+     "expect": {"age_over_90": true}}
+  ]
+}

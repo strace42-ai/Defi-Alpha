@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeFi Alpha Scanner</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/vendor/chart.umd.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">DeFi Alpha <span>Scanner</span></div>
+  <nav id="nav">
+    <a href="#/dashboard" data-r="dashboard">Обзор</a>
+    <a href="#/scanner" data-r="scanner">Сканер</a>
+    <a href="#/review" data-r="review">Ручная проверка</a>
+    <a href="#/watchlist" data-r="watchlist">Наблюдение</a>
+    <a href="#/tokenomics" data-r="tokenomics">Токеномика</a>
+    <a href="#/alerts" data-r="alerts">Сигналы <b id="alertBadge" class="badge hidden"></b></a>
+    <a href="#/sources" data-r="sources">Источники данных</a>
+    <a href="#/settings" data-r="settings">Настройки</a>
+  </nav>
+  <div class="actions">
+    <span id="jobStatus" class="job"></span>
+    <button id="scanBtn" class="primary">Сканировать</button>
+  </div>
+</header>
+<main id="view"><div class="loading">Загрузка…</div></main>
+<footer class="foot">Только чтение данных. Не инвестиционная рекомендация. Время показано в зоне <b id="tz"></b>; в базе — UTC.</footer>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
