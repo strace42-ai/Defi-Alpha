@@ -28,6 +28,8 @@ class Chain:
     explorer_address_path: str = "/address/{address}"
     explorer_tx_path: str = "/tx/{tx}"
     max_log_range: int = 10_000  # максимальный диапазон блоков eth_getLogs (подтверждён для RPC)
+    logs_ok: bool = True  # бесплатный RPC отдаёт eth_getLogs (проверено 2026-11-04)
+    logs_note: str = ""
     support: str = "experimental"  # "supported" | "experimental" | "planned"
     default_enabled: bool = False
     quote_assets: dict[str, str] = field(default_factory=dict)  # address(normalized) -> symbol
@@ -64,7 +66,8 @@ CHAINS: dict[str, Chain] = {
     "base": Chain(
         key="base", name="Base", kind="evm", gt="base", ds="base", llama="Base", chain_id=8453,
         rpc=["https://mainnet.base.org"], explorer="https://basescan.org",
-        max_log_range=2_000, support="supported", default_enabled=True,
+        max_log_range=2_000, support="supported", default_enabled=True, logs_ok=False,
+        logs_note="бесплатные RPC Base не отдают eth_getLogs (mainnet.base.org: 429 «request limit reached», drpc: лимит free-плана)",
         quote_assets=_q({ZERO: "ETH", NATIVE_EEEE: "ETH",
                          "0x4200000000000000000000000000000000000006": "WETH",
                          "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC",
@@ -76,7 +79,7 @@ CHAINS: dict[str, Chain] = {
     "eth": Chain(
         key="eth", name="Ethereum", kind="evm", gt="eth", ds="ethereum", llama="Ethereum", chain_id=1,
         rpc=["https://ethereum-rpc.publicnode.com"], explorer="https://etherscan.io",
-        max_log_range=1_000, support="supported", default_enabled=True,
+        max_log_range=10_000, logs_note="publicnode: только недавние блоки (старые — «Archive requests require a personal token»)", support="supported", default_enabled=True,
         quote_assets=_q({ZERO: "ETH", NATIVE_EEEE: "ETH",
                          "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "WETH",
                          "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC",
@@ -87,7 +90,7 @@ CHAINS: dict[str, Chain] = {
     "arbitrum": Chain(
         key="arbitrum", name="Arbitrum", kind="evm", gt="arbitrum", ds="arbitrum", llama="Arbitrum",
         chain_id=42161, rpc=["https://arb1.arbitrum.io/rpc"], explorer="https://arbiscan.io",
-        max_log_range=10_000, support="supported", default_enabled=True,
+        max_log_range=50_000, support="supported", default_enabled=True,
         quote_assets=_q({ZERO: "ETH", NATIVE_EEEE: "ETH",
                          "0x82af49447d8a07e3bd95bd0d56f35241523fbab1": "WETH",
                          "0xaf88d065e77c8cc2239327c5edb3a432268e5831": "USDC",
@@ -97,8 +100,8 @@ CHAINS: dict[str, Chain] = {
     ),
     "bsc": Chain(
         key="bsc", name="BNB Chain", kind="evm", gt="bsc", ds="bsc", llama="BSC", chain_id=56,
-        rpc=["https://bsc-dataseed1.bnbchain.org"], explorer="https://bscscan.com",
-        max_log_range=5_000, support="supported", default_enabled=True,
+        rpc=["https://bsc-rpc.publicnode.com"], explorer="https://bscscan.com",
+        max_log_range=20_000, logs_note="официальный dataseed отвечает «limit exceeded» на getLogs; используется publicnode", support="supported", default_enabled=True,
         quote_assets=_q({ZERO: "BNB", NATIVE_EEEE: "BNB",
                          "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c": "WBNB",
                          "0x55d398326f99059ff775485246999027b3197955": "USDT",
@@ -110,7 +113,7 @@ CHAINS: dict[str, Chain] = {
     "optimism": Chain(
         key="optimism", name="Optimism", kind="evm", gt="optimism", ds="optimism", llama="OP Mainnet",
         chain_id=10, rpc=["https://mainnet.optimism.io"], explorer="https://optimistic.etherscan.io",
-        max_log_range=2_000, support="experimental",
+        max_log_range=2_000, support="experimental", logs_ok=False, logs_note="getLogs на бесплатном RPC не проверен",
         quote_assets=_q({ZERO: "ETH", NATIVE_EEEE: "ETH",
                          "0x4200000000000000000000000000000000000006": "WETH",
                          "0x0b2c639c533813f4aa9d7837caf62653d097ff85": "USDC",

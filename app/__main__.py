@@ -36,7 +36,6 @@ def main() -> None:
     from . import research
     from .jobs import runner
     seeded = research.load_seed()
-    runner.start()
     # добавленные вручную/исследовательские токены без анализа (в т.ч. после прерывания) — в очередь
     seeded = list(dict.fromkeys(seeded + [r["uid"] for r in db.q(
         "SELECT uid FROM tokens WHERE discovery_source='manual' AND last_deep_at IS NULL")]))
@@ -44,6 +43,7 @@ def main() -> None:
         runner.submit("token", priority=5, uid=uid)  # фоном, после пользовательских заданий
     if args.scan:
         runner.submit("scan")
+    runner.start()  # после постановки в очередь: приоритеты применяются с первого задания
     port = args.port or int(config.load_settings().get("ui_port", 8765))
     url = f"http://127.0.0.1:{port}/"
     print(f"\n  DeFi Alpha Scanner запущен: {url}\n  Данные: {config.DATA_DIR}\n  Для остановки закройте это окно (Ctrl+C).\n")

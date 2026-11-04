@@ -20,13 +20,32 @@ from .util import dumps, loads, now_iso, normalize_address, parse_iso, valid_add
 WEB = Path(__file__).resolve().parent / "web"
 app = FastAPI(title="DeFi Alpha Scanner", version=__version__)
 
+_LOCAL_HOSTS = {"127.0.0.1", "localhost"}
+
+
+@app.middleware("http")
+async def local_only(request, call_next):
+    """Защита локального сервера: только Host 127.0.0.1/localhost (против DNS rebinding) и
+    запрет изменяющих запросов с чужих сайтов (Origin не локальный)."""
+    host = (request.headers.get("host") or "").split(":")[0]
+    if host and host not in _LOCAL_HOSTS and host != "testserver":
+        return JSONResponse({"detail": "forbidden host"}, status_code=403)
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin")
+        if origin:
+            from urllib.parse import urlparse
+            if (urlparse(origin).hostname or "") not in _LOCAL_HOSTS:
+                return JSONResponse({"detail": "cross-origin request rejected"}, status_code=403)
+        ctype = request.headers.get("content-type", "")
+        if request.headers.get("content-length", "0") not in ("0", "") and "application/json" not in ctype:
+            return JSONResponse({"detail": "JSON expected"}, status_code=415)
+    return await call_next(request)
+
 
 def _row(r: dict, fc: dict[str, dict] | None = None) -> dict:
     f = loads(r.get("facts"), {}) or {}
     ch = CHAINS.get(r["chain"])
     fr = fc or {}
-    age = (fr.get("age") or {})
-    agev = loads(age.get("evidence"), []) if isinstance(age.get("evidence"), str) else age.get("evidence")
     cands = f.get("mcap_candidates") or []
     best = next((c for k in ("circulating_official", "circulating_manual", "coingecko_via_gt", "ds_reported")
                  for c in cands if c["kind"] == k), None)
@@ -35,13 +54,7 @@ def _row(r: dict, fc: dict[str, dict] | None = None) -> dict:
     dd = None
     if price and ath.get("ath_usd"):
         dd = max(0.0, (1 - price / ath["ath_usd"]) * 100)
-    ev = f.get("evaluation") or {}
-    start = None
-    basis = None
-    for e in (agev or []):
-        pass
     age_days = None
-    ag = (f.get("_age_values") or {})
     first_trade = ath.get("first_trade_at") or (f.get("earliest_pool") or {}).get("at") or (f.get("ds") or {}).get("pair_created_at")
     if first_trade:
         dt = parse_iso(first_trade)
@@ -81,7 +94,7 @@ def _filters_map(uids: list[str]) -> dict[str, dict[str, dict]]:
 
 
 def _query_tokens(search: str = "", chain: str = "", status: str = "", level: str = "", show_service: bool = False,
-                  only_watch: bool = False, limit: int = 500, offset: int = 0, sort: str = "first_seen_at", order: str = "desc"):
+                  only_watch: bool = False, limit: int = 500, offset: int = 0, sort: str = "default", order: str = "desc"):
     where, p = ["1=1"], []
     if not show_service:
         where.append("t.asset_class='token'")
@@ -97,11 +110,15 @@ def _query_tokens(search: str = "", chain: str = "", status: str = "", level: st
     if only_watch:
         where.append("w.token_uid IS NOT NULL")
     cols = {"first_seen_at", "symbol", "chain", "level", "status", "score_preliminary", "last_market_at"}
-    sort = sort if sort in cols else "first_seen_at"
     order = "ASC" if order.lower() == "asc" else "DESC"
+    if sort in cols:
+        order_sql = f"t.{sort} {order} NULLS LAST"
+    else:  # по умолчанию: сначала продвинутые уровни, затем оценка, затем свежие
+        order_sql = ("CASE t.status WHEN 'FAIL' THEN 1 ELSE 0 END, t.level DESC, t.score_preliminary DESC NULLS LAST, "
+                     "t.last_market_at IS NULL, t.first_seen_at DESC")
     total = db.q1(f"SELECT COUNT(*) n FROM tokens t LEFT JOIN watchlist w ON w.token_uid=t.uid WHERE {' AND '.join(where)}", p)["n"]
     rows = db.rows_to_dicts(db.q(f"SELECT t.*, w.token_uid AS watch FROM tokens t LEFT JOIN watchlist w ON w.token_uid=t.uid "
-                                 f"WHERE {' AND '.join(where)} ORDER BY t.{sort} {order} NULLS LAST LIMIT ? OFFSET ?", p + [limit, offset]))
+                                 f"WHERE {' AND '.join(where)} ORDER BY {order_sql} LIMIT ? OFFSET ?", p + [limit, offset]))
     fm = _filters_map([r["uid"] for r in rows])
     return total, [_row(r, fm.get(r["uid"])) for r in rows]
 
@@ -157,7 +174,7 @@ def _coverage_summary() -> list[dict]:
 
 @app.get("/api/tokens")
 def tokens(search: str = "", chain: str = "", status: str = "", level: str = "", show_service: bool = False,
-           only_watch: bool = False, limit: int = Query(500, le=5000), offset: int = 0, sort: str = "first_seen_at", order: str = "desc"):
+           only_watch: bool = False, limit: int = Query(500, le=5000), offset: int = 0, sort: str = "default", order: str = "desc"):
     total, rows = _query_tokens(search, chain, status, level, show_service, only_watch, limit, offset, sort, order)
     return {"total": total, "rows": rows}
 

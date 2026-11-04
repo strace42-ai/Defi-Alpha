@@ -217,7 +217,8 @@ def f_utility(facts: dict, manual: list[dict], asset_class: str | None) -> dict:
     socials = links.get("socials") or []
     ev = []
     if asset_class == "tokenized_stock":
-        return R("utility", FAIL, "Токенизированная акция (актив эмитента), а не токен DeFi-протокола", confidence="confirmed")
+        return R("utility", FAIL, "Токенизированная акция/фонд (актив эмитента, определено по названию), а не токен DeFi-протокола",
+                 confidence="preliminary")
     man = next((m for m in manual if m["fact_key"] == "utility"), None)
     if link:
         ev.append({"label": "Связь с протоколом", "value": f"{link['name']} ({link.get('category')})",

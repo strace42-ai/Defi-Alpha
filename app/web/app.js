@@ -136,7 +136,7 @@ function srcTable(s) {
 const COLS = [
   ["symbol", "Проект / тикер"], ["chain", "Сеть"], ["address", "Контракт"], ["first_trade", "Начало торгов"], ["age_days", "Возраст"],
   ["price", "Цена"], ["mcap", "MCAP"], ["fdv_total", "FDV"], ["liquidity", "Ликвидность"], ["volume", "Объём 24ч"], ["drawdown", "От ATH"],
-  ["f_age", "Возр."], ["f_mcap", "MCAP"], ["f_drawdown", "ATH"], ["f_vc", "No-VC"], ["f_utility", "DeFi"], ["f_ecosystem", "Сеть"],
+  ["f_age", "Ф1 Возраст"], ["f_mcap", "Ф2 MCAP"], ["f_drawdown", "Ф3 ATH"], ["f_vc", "Ф4 No-VC"], ["f_utility", "Ф5 DeFi"], ["f_ecosystem", "Ф6 Сеть"],
   ["level", "Ур."], ["status", "Статус"], ["score_preliminary", "Оценка"], ["confidence", "Достов."],
 ];
 let tableState = { sort: null, dir: -1 };
@@ -162,7 +162,7 @@ function cell(r, k) {
     case "volume": return `<td class="num">${usd(r.volume)}</td>`;
     case "drawdown": return `<td class="num">${r.drawdown == null ? '<span class="muted">н/д</span>' : "−" + r.drawdown.toFixed(0) + "%"}</td>`;
     case "level": return `<td><span class="lvl" title="${esc(META.levels[r.level] || "")}">${esc(r.level)}</span></td>`;
-    case "status": return `<td title="${esc(r.status_reason || "")}">${st(r.status)}</td>`;
+    case "status": return `<td title="${esc(r.status_reason || "")}">${r.last_market_at || r.status !== "UNKNOWN" ? st(r.status) : '<span class="muted small">ожидает анализа</span>'}</td>`;
     case "score_preliminary": return `<td class="num" title="подтверждено ${r.score_confirmed ?? "—"} из проверяемых ${r.score_max_verifiable ?? "—"}">${r.score_preliminary == null ? '<span class="muted">—</span>' : r.score_preliminary.toFixed(0) + `<span class="muted small"> /${(r.score_max_verifiable || 0).toFixed(0)}</span>`}</td>`;
     case "confidence": return `<td class="small">${esc({ confirmed: "подтв.", preliminary: "предв.", low: "низкая" }[r.confidence] || "—")}</td>`;
     default: if (k.startsWith("f_")) return `<td>${st(r[k], r["c_" + k.slice(2)])}</td>`; return `<td>${esc(r[k])}</td>`;

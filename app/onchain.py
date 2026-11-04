@@ -27,32 +27,47 @@ log = logging.getLogger("das.onchain")
 Progress = Callable[[str], None]
 
 
-def find_block_by_time(rpc: Rpc, ts: int, head: int, head_ts: int) -> int:
-    lo, hi = 1, head
-    # оценка по среднему времени блока, затем бинарный поиск по заголовкам (архив не нужен)
-    for _ in range(40):
-        if hi - lo <= 1:
+def find_block_by_time(rpc: Rpc, ts: int, head: int, head_ts: int, max_iter: int = 8) -> int:
+    """Блок не позже момента ts. Метод секущих по заголовкам блоков (архив не нужен), ~4–8 запросов."""
+    lo_b, lo_t = max(1, head - 1_000_000), None
+    lo_t = rpc.block_timestamp(lo_b)
+    hi_b, hi_t = head, head_ts
+    if lo_t is None:
+        return lo_b
+    # расширяем нижнюю опору, пока она не окажется раньше ts
+    while lo_t > ts and lo_b > 1 and max_iter > 0:
+        rate = (hi_t - lo_t) / max(1, hi_b - lo_b) or 1.0
+        nb = max(1, int(lo_b - (lo_t - ts) / rate * 1.1) - 1000)
+        hi_b, hi_t = lo_b, lo_t
+        lo_b, lo_t = nb, rpc.block_timestamp(nb) or 0
+        max_iter -= 1
+    for _ in range(max_iter):
+        if hi_b - lo_b <= 1000:
             break
-        mid = (lo + hi) // 2
+        rate = (hi_t - lo_t) / max(1, hi_b - lo_b) or 1.0
+        mid = int(lo_b + (ts - lo_t) / rate)
+        mid = min(max(mid, lo_b + 1), hi_b - 1)
         t = rpc.block_timestamp(mid)
         if t is None:
             break
-        if t < ts:
-            lo = mid
+        if t <= ts:
+            lo_b, lo_t = mid, t
         else:
-            hi = mid
-    return lo
+            hi_b, hi_t = mid, t
+    return lo_b
 
 
 def _labels(chain: str) -> dict[str, dict]:
     return {r["address"]: dict(r) for r in db.q("SELECT * FROM address_labels WHERE chain=?", (chain,))}
 
 
-def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None = None) -> dict:
+def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None = None, max_seconds: float = 240) -> dict:
     tok = db.q1("SELECT * FROM tokens WHERE uid=?", (uid,))
     chain = CHAINS[tok["chain"]]
     if chain.kind != "evm":
         return {"error": "история mint для этой сети не реализована"}
+    import time as _time
+    deadline = _time.monotonic() + max_seconds
     rpc = Rpc(chain)
     addr = tok["address"]
     head = rpc.block_number()
@@ -81,7 +96,7 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
     def fetch(a: int, b: int) -> int:
         nonlocal calls, step
         n = 0
-        while a <= b and calls < max_calls:
+        while a <= b and calls < max_calls and _time.monotonic() < deadline:
             e = min(b, a + step - 1)
             try:
                 mints = rpc.transfer_logs(addr, a, e, mint=True)
@@ -319,14 +334,16 @@ def security_check(uid: str) -> dict:
     return out
 
 
-def onchain_update(uid: str, progress: Progress | None = None, max_calls: int = 40) -> dict:
+def onchain_update(uid: str, progress: Progress | None = None, max_calls: int = 40, max_seconds: float = 240) -> dict:
     tok = db.q1("SELECT * FROM tokens WHERE uid=?", (uid,))
     chain = CHAINS[tok["chain"]]
     f = get_facts(uid)
     oc = f.get("onchain") or {}
-    if chain.kind == "evm":
+    if chain.kind == "evm" and not chain.logs_ok:
+        oc["error"] = f"история mint недоступна: {chain.logs_note}"
+    elif chain.kind == "evm":
         try:
-            sc = scan_supply_events(uid, max_calls=max_calls, progress=progress)
+            sc = scan_supply_events(uid, max_calls=max_calls, progress=progress, max_seconds=max_seconds)
             oc.update(sc)
             oc["analytics"] = supply_analytics(uid)
         except SourceError as e:

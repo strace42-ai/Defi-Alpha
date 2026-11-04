@@ -134,7 +134,7 @@ def request_json(source: str, method: str, url: str, *, params: dict | None = No
         if r.status_code == 429:
             ra = r.headers.get("retry-after")
             wait = float(ra) if ra and ra.replace(".", "").isdigit() and float(ra) > 0 else 15 * (attempt + 1)
-            wait = min(wait, 90)
+            wait = min(wait, 20 if source.startswith("rpc") else 90)
             lim.penalize(wait)
             last_err = f"HTTP 429 (лимит запросов), пауза {wait:.0f} c"
             _status(source, False, last_err, rate_limited=True)

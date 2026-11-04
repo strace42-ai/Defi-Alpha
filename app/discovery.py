@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Callable
 
 from . import config, db
@@ -25,11 +26,16 @@ log = logging.getLogger("das.discovery")
 Progress = Callable[[str], None]
 
 
+_ISSUER_RE = re.compile(r"(\b(Inc\.?|Corporation|Corp\.?|ETF|Trust|plc|N\.V\.|Holdings|Technologies Corp)\s*$)|(\bInc\.?\b)", re.I)
+
+
 def classify_asset(chain: Chain, address: str, symbol: str | None, name: str | None) -> str:
     if address in chain.quote_assets:
         return "quote"
     n = (name or "")
     if "Robinhood Token" in n:  # токенизированные акции на Robinhood Chain
+        return "tokenized_stock"
+    if _ISSUER_RE.search(n):  # «Apple Inc.», «Meta Platforms Inc.», «… ETF Trust» — токенизированные бумаги эмитентов
         return "tokenized_stock"
     return "token"
 
@@ -54,6 +60,10 @@ def upsert_token(chain: Chain, tok: dict, *, source: str, reason: str) -> tuple[
     db.ex("UPDATE tokens SET symbol=COALESCE(symbol,?), name=COALESCE(name,?), decimals=COALESCE(decimals,?), "
           "coingecko_id=COALESCE(coingecko_id,?), updated_at=? WHERE uid=?",
           (tok.get("symbol"), tok.get("name"), tok.get("decimals"), tok.get("coingecko_id"), now, uid))
+    if row["name"] is None and tok.get("name"):
+        ac = classify_asset(chain, addr, tok.get("symbol"), tok.get("name"))
+        if ac != "token":
+            db.ex("UPDATE tokens SET asset_class=?, is_quote_asset=? WHERE uid=?", (ac, 1 if ac == "quote" else 0, uid))
     return uid, False
 
 

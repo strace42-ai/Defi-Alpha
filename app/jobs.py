@@ -117,7 +117,7 @@ def _evaluate(uid: str, old: dict | None) -> dict:
     return pipeline.evaluate(uid, old_facts=old)
 
 
-def deep_analyze(uid: str, prog: Callable[[str], None], onchain_calls: int = 40) -> dict:
+def deep_analyze(uid: str, prog: Callable[[str], None], onchain_calls: int = 40, onchain_seconds: float = 240) -> dict:
     old = _snapshot(uid)
     tok0 = db.q1("SELECT chain FROM tokens WHERE uid=?", (uid,))
     enrich.quick_enrich(tok0["chain"], [uid], prog)
@@ -128,7 +128,7 @@ def deep_analyze(uid: str, prog: Callable[[str], None], onchain_calls: int = 40)
     if res["level"] in ("C", "D", "E") or db.q1("SELECT 1 FROM watchlist WHERE token_uid=?", (uid,)):
         prog(f"ончейн-проверка {tok['symbol']}")
         try:
-            onchain.onchain_update(uid, prog, max_calls=onchain_calls)
+            onchain.onchain_update(uid, prog, max_calls=onchain_calls, max_seconds=onchain_seconds)
         except SourceError as e:
             db.log_error("onchain", str(e))
         res = _evaluate(uid, old)
@@ -201,7 +201,7 @@ def job_scan(prog, chains: list[str] | None = None, deep_limit: int = 8) -> dict
     for _, liq, uid in ranked[:deep_limit]:
         prog(f"углублённый анализ ({stats['deep'] + 1}/{min(deep_limit, len(ranked))})")
         try:
-            deep_analyze(uid, prog, onchain_calls=20)
+            deep_analyze(uid, prog, onchain_calls=20, onchain_seconds=60)
             stats["deep"] += 1
         except SourceError as e:
             db.log_error("deep", f"{uid}: {e}")

@@ -41,6 +41,13 @@ def market_minimum(facts: dict, s: dict) -> tuple[bool | None, str]:
 def evaluate(uid: str, old_facts: dict | None = None) -> dict:
     s = config.load_settings()
     tok = dict(db.q1("SELECT * FROM tokens WHERE uid=?", (uid,)))
+    from .chains import CHAINS
+    from .discovery import classify_asset
+    ac = classify_asset(CHAINS[tok["chain"]], tok["address"], tok["symbol"], tok["name"])
+    if ac != tok["asset_class"] and tok["asset_class"] == "token":
+        db.ex("UPDATE tokens SET asset_class=?, is_quote_asset=? WHERE uid=?", (ac, 1 if ac == "quote" else 0, uid))
+        db.record_status_change(uid, "asset_class", tok["asset_class"], ac, "переклассификация по названию/адресу")
+        tok["asset_class"] = ac
     facts = get_facts(uid)
     health = get_chain_health(tok["chain"])
     if health:

@@ -228,3 +228,20 @@ def test_defillama_address_link_real_listing():
     r = fundamentals.link_protocol(fake)
     assert r["linked"] is None  # совпадение тикера не создаёт связь
     assert any(p["slug"] == "longbow" for p in r["possible"])
+
+
+def test_find_block_by_time_secant():
+    """Синтетическая цепь: время блока меняется (1 с, затем 0.1 с) — поиск должен найти блок за ≤ ~10 запросов."""
+    class FakeRpc:
+        calls = 0
+
+        def block_timestamp(self, b):
+            FakeRpc.calls += 1
+            return int(b * 1.0) if b <= 5_000_000 else int(5_000_000 + (b - 5_000_000) * 0.1)
+    rpc = FakeRpc()
+    head = 100_000_000
+    head_ts = rpc.block_timestamp(head)
+    target = 4_000_000  # ts попадает в «медленный» участок
+    b = onchain.find_block_by_time(rpc, target, head, head_ts)
+    assert rpc.block_timestamp(b) <= target and target - rpc.block_timestamp(b) < 2000
+    assert FakeRpc.calls < 25
