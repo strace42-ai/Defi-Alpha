@@ -36,15 +36,21 @@ def link_protocol(uid: str) -> dict:
     chain = CHAINS[tok["chain"]]
     addr = tok["address"]
     res: dict[str, Any] = {"linked": None, "possible": []}
-    rows = db.q("SELECT slug,name,category,address,gecko_id,symbol,url,listed_at,chains FROM protocols "
-                "WHERE address IS NOT NULL AND (address LIKE ? OR address LIKE ?)", (f"%{addr}%", f"%{tok['address_display'] or addr}%"))
+    rows = db.q("SELECT slug,name,category,address,gecko_id,symbol,url,listed_at,chains,raw FROM protocols "
+                "WHERE address IS NOT NULL AND (LOWER(address) LIKE ?)", (f"%{addr.lower()}%",))
+    matches = []
     for r in rows:
         ch, a = parse_llama_address(r["address"])
         if ch and ch.key == chain.key and a == addr:
-            res["linked"] = {"slug": r["slug"], "name": r["name"], "category": r["category"], "method": "defillama_address",
-                             "evidence": f"DefiLlama /protocols: address = {r['address']}",
-                             "url": f"https://defillama.com/protocol/{r['slug']}"}
-            break
+            matches.append((float((loads(r["raw"], {}) or {}).get("tvl") or 0), r))
+    if matches:
+        matches.sort(key=lambda x: -x[0])
+        r = matches[0][1]
+        others = [m[1]["slug"] for m in matches[1:]]
+        res["linked"] = {"slug": r["slug"], "name": r["name"], "category": r["category"], "method": "defillama_address",
+                         "evidence": f"DefiLlama /protocols: address = {r['address']}"
+                                     + (f"; тот же токен указан у: {', '.join(others[:8])}" if others else ""),
+                         "url": f"https://defillama.com/protocol/{r['slug']}", "also": others}
     if not res["linked"] and tok["coingecko_id"]:
         r = db.q1("SELECT slug,name,category,address FROM protocols WHERE gecko_id=?", (tok["coingecko_id"],))
         if r:
@@ -208,6 +214,11 @@ def ensure_protocols() -> None:
 
 def update_token_fundamentals(uid: str) -> dict:
     ensure_protocols()
+    tok0 = db.q1("SELECT chain FROM tokens WHERE uid=?", (uid,))
+    h = get_chain_health(tok0["chain"])
+    from .util import parse_iso
+    if not h or not h.get("tvl_usd") or (now_utc() - (parse_iso(h.get("at")) or now_utc())).total_seconds() > 20 * 3600:
+        chain_health(tok0["chain"])  # метрики сети нужны фильтру «Живая экосистема»
     link = link_protocol(uid)
     f = get_facts(uid)
     f["protocol_link"] = link
@@ -216,6 +227,12 @@ def update_token_fundamentals(uid: str) -> dict:
         m = protocol_metrics(slug)
         tok = db.q1("SELECT chain FROM tokens WHERE uid=?", (uid,))
         m["category_share"] = category_share(slug, m.get("category"), CHAINS[tok["chain"]].llama)
+        # старейший листинг среди всех протоколов DefiLlama с этим же токеном (миграции/объединения)
+        fam = [slug] + list(link["linked"].get("also") or [])
+        r = db.q1(f"SELECT MIN(listed_at) m FROM protocols WHERE slug IN ({','.join('?' * len(fam))})", fam)
+        if r and r["m"]:
+            m["family_first_listed_at"] = r["m"]
+            m["family"] = fam
         # отношение выручки к капитализации (только при известном circulating MCAP)
         mc = best_circ_mcap(f)
         if mc:

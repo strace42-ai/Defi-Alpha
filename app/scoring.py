@@ -92,7 +92,7 @@ def score(facts: dict, filters: dict[str, dict], manual: list[dict]) -> dict:
     c.add("История выпуска сходится с totalSupply()", 4, None if not rec or rec.get("matches") is None else bool(rec.get("matches")),
           rec.get("note") or "ончейн-сканирование не выполнялось")
     bc = _g(oc, "analytics", "budget_comparison") or []
-    done = [w for w in bc if not w.get("in_progress")]
+    done = [w for w in bc if not w.get("in_progress") and w.get("over_budget") is not None]
     c.add("Фактическая эмиссия не превышает заявленный бюджет", 4, None if not done else not any(w["over_budget"] for w in done),
           f"проверено недель: {len(done)}" if done else "нет версии токеномики с недельными бюджетами или завершённых недель")
     vest = mk("vesting_documented")

@@ -135,28 +135,48 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
     db.set_progress(pkey_to, str(nxt))
     if progress:
         progress(f"ончейн {tok['symbol']}: блоки до {nxt} из {head}")
-    # временные метки блоков событий без ts (по уникальным блокам, ограниченно)
-    missing = db.q("SELECT DISTINCT block FROM supply_events WHERE token_uid=? AND ts IS NULL ORDER BY block LIMIT 400", (uid,))
-    if missing:
-        # интерполяция по двум опорным блокам вместо запроса каждого блока
-        blocks = [r["block"] for r in missing]
-        refs = {}
-        for b in {blocks[0], blocks[-1], head}:
+    # временные метки: кусочно-линейная интерполяция по опорным блокам (≤ 12 запросов на все события)
+    rng = db.q1("SELECT MIN(block) lo, MAX(block) hi, COUNT(*) n FROM supply_events WHERE token_uid=? AND ts IS NULL", (uid,))
+    if rng and rng["n"]:
+        lo, hi = rng["lo"], rng["hi"]
+        k = 10 if hi - lo > 100_000 else 2
+        anchors = sorted({lo, hi} | {lo + (hi - lo) * i // k for i in range(1, k)})
+        refs = []
+        for bnum in anchors:
             try:
-                refs[b] = rpc.block_timestamp(b)
+                t = rpc.block_timestamp(bnum)
+                if t:
+                    refs.append((bnum, t))
             except SourceError:
                 pass
-        ks = sorted(k for k, v in refs.items() if v)
-        if len(ks) >= 2:
-            b0, b1 = ks[0], ks[-1]
-            t0, t1 = refs[b0], refs[b1]
-            rate = (t1 - t0) / (b1 - b0) if b1 != b0 else 0
-            for b in blocks:
-                db.get_conn().execute("UPDATE supply_events SET ts=? WHERE token_uid=? AND block=?",
-                                      (iso(from_ts(t0 + (b - b0) * rate)), uid, b))
-            db.get_conn().commit()
+        if refs:
+            if len(refs) == 1:
+                refs.append((head, head_ts))
+            blocks = [r["block"] for r in db.q("SELECT DISTINCT block FROM supply_events WHERE token_uid=? AND ts IS NULL", (uid,))]
+            c = db.get_conn()
+            for bnum in blocks:
+                j = 0
+                while j < len(refs) - 2 and refs[j + 1][0] < bnum:
+                    j += 1
+                (b0, t0), (b1, t1) = refs[j], refs[j + 1]
+                t = t0 + (bnum - b0) * ((t1 - t0) / (b1 - b0) if b1 != b0 else 0)
+                c.execute("UPDATE supply_events SET ts=? WHERE token_uid=? AND block=?", (iso(from_ts(t)), uid, bnum))
+            c.commit()
     total_raw = rpc.total_supply_raw(addr)
     total = total_raw / dec if total_raw is not None else None
+    if nxt > head and total is not None:
+        # догоняем блоки, появившиеся за время сканирования (блоки ~0.1 с), сразу после чтения totalSupply
+        try:
+            head2 = rpc.block_number()
+            if head2 >= nxt:
+                calls_left = max_calls - calls
+                if calls_left < 2:
+                    calls -= 2  # гарантируем один короткий догоняющий запрос
+                nxt = fetch(nxt, head2)
+                db.set_progress(pkey_to, str(nxt))
+                head = head2
+        except SourceError:
+            pass
     if total is not None:
         db.observe("token", uid, "total_supply_rpc", total, source=f"rpc:{chain.key}", unit="tokens",
                    confidence="confirmed", method="eth_call totalSupply()", verify_url=chain.explorer_token(addr))
@@ -171,18 +191,19 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
                          "завершения; продолжится при следующем обновлении"}
     elif total is not None:
         diff = total - reconstructed
-        recon = {"total_supply": total, "reconstructed": reconstructed, "diff": diff,
-                 "matches": abs(diff) <= max(1e-6 * total, 1e-9),
+        tol = max(1e-5 * total, 1e-9)  # допуск 0.001%: гонка между чтением totalSupply и последним блоком логов
+        recon = {"total_supply": total, "reconstructed": reconstructed, "diff": diff, "tolerance": tol,
+                 "matches": abs(diff) <= tol,
                  "note": ("история предложения сходится с totalSupply() — стандартная модель Transfer подтверждена"
-                          if abs(diff) <= max(1e-6 * total, 1e-9) else
+                          if abs(diff) <= tol else
                           f"НЕ сходится на {diff:,.2f}: часть mint раньше начала сканирования (блок {scanned_from}) "
                           "или контракт использует нестандартную модель событий")}
     first = db.q1("SELECT * FROM supply_events WHERE token_uid=? AND kind='mint' ORDER BY block, log_index LIMIT 1", (uid,))
     out = {"scanned_from_block": scanned_from, "scanned_to_block": nxt, "head": head, "complete_to_head": nxt > head,
            "events": agg["n"], "minted": minted, "burned": burned, "total_supply": total,
            "reconciliation": recon, "errors": errors, "at": now_iso(),
-           "first_mint": {"block": first["block"], "ts": first["ts"], "tx": first["tx_hash"]} if first and recon and recon["matches"] else None,
-           "first_mint_note": None if (recon and recon["matches"]) else "первый mint не установлен: сканирование не дошло до начала"}
+           "first_mint": {"block": first["block"], "ts": first["ts"], "tx": first["tx_hash"]} if first and recon and recon.get("matches") else None,
+           "first_mint_note": None if (recon and recon.get("matches")) else "первый mint не установлен: сканирование не дошло до начала"}
     # рекурсивно дотягиваем начало, если не сходится и есть бюджет
     if recon and recon["matches"] is False and recon["diff"] > 0 and calls < max_calls and scanned_from > 1:
         new_from = max(1, scanned_from - step * max(1, (max_calls - calls) // 2))
@@ -229,10 +250,13 @@ def supply_analytics(uid: str) -> dict:
             minted_emis = sum(r["amount"] or 0 for r in rows if r["kind"] == "mint" and r["ts"] and st <= parse_iso(r["ts"]) < en
                               and (labels.get(r["counterparty"]) or {}).get("kind") in emis_kinds)
             in_progress = en > now_utc()
+            has_labels = any((lb.get("kind") in emis_kinds) for lb in labels.values())
             budget_cmp.append({"week": w.get("week"), "start": w.get("start"), "budget": w.get("amount"),
                                "minted_all": minted_all, "minted_to_emission_contracts": minted_emis,
                                "in_progress": in_progress,
-                               "over_budget": (not in_progress) and w.get("amount") is not None and minted_emis > 1.1 * float(w["amount"]),
+                               "over_budget": (None if not has_labels else
+                                               (not in_progress) and w.get("amount") is not None and minted_emis > 1.1 * float(w["amount"])),
+                               "labels_missing": not has_labels,
                                "note": "бюджет — потолок эмиссии, а не выпущенное количество; "
                                        "minted_all включает все mint (команда, ликвидность, клеймы)"})
     return {"daily": series[-180:], "top_recipients": top_l, "budget_comparison": budget_cmp,

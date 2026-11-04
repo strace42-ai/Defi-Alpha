@@ -90,7 +90,9 @@ def f_age(facts: dict, manual: list[dict], now: _dt.datetime, max_days: float) -
         ev.append({"label": "Пул, через который обнаружен токен", "value": disc_pool,
                    "note": "это НОВЫЙ ПУЛ уже торгующегося токена — возраст считается по самому раннему пулу"})
     proto = facts.get("protocol") or {}
-    p_start = parse_iso(proto.get("first_tvl_at")) or parse_iso(proto.get("listed_at"))
+    p_dates = [d for d in (parse_iso(proto.get("first_tvl_at")), parse_iso(proto.get("listed_at")),
+                           parse_iso(proto.get("family_first_listed_at"))) if d]
+    p_start = min(p_dates) if p_dates else None
     if p_start:
         vals["protocol_age_days"] = round(days_between(p_start, now), 1)
         ev.append({"label": "Возраст протокола (первый TVL/листинг DefiLlama)", "value": p_start.date().isoformat(),

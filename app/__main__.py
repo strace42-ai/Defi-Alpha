@@ -23,6 +23,19 @@ def setup_logging() -> None:
     root.addHandler(sh)
 
 
+def _free_port(start: int) -> int:
+    """Если порт занят (например, программа уже запущена) — взять следующий свободный."""
+    import socket
+    for p in range(start, start + 20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    return start
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="DeFi Alpha Scanner")
     ap.add_argument("--port", type=int, default=None)
@@ -44,7 +57,7 @@ def main() -> None:
     if args.scan:
         runner.submit("scan")
     runner.start()  # после постановки в очередь: приоритеты применяются с первого задания
-    port = args.port or int(config.load_settings().get("ui_port", 8765))
+    port = _free_port(args.port or int(config.load_settings().get("ui_port", 8765)))
     url = f"http://127.0.0.1:{port}/"
     print(f"\n  DeFi Alpha Scanner запущен: {url}\n  Данные: {config.DATA_DIR}\n  Для остановки закройте это окно (Ctrl+C).\n")
     if not args.no_browser:

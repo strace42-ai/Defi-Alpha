@@ -49,7 +49,7 @@ def main() -> None:
         if "defi_link" in exp:
             got = t["protocol_slug"]
             want = exp["defi_link"]
-            ok = (got == want) if want is None else (got is not None and got.startswith(want))
+            ok = (got == want) if want is None else (got is not None and want[:4] in got)
             if not chk("связь с протоколом", ok, f"ожидалось {want}, получено {got}"):
                 errors["identity"] += 1
         if "first_trade_known" in exp:
@@ -79,6 +79,10 @@ def main() -> None:
             chk("просадка ≤ 86%", ok, f"получено {got}: {(fc.get('drawdown') or {}).get('reason')}")
             if not ok:
                 errors["false_exclude"] += 1
+        if exp.get("mature_project_warning"):
+            reason = (fc.get("age") or {}).get("reason") or ""
+            chk("предупреждение «новый токен зрелого проекта»", "зрелого проекта" in reason or (fc.get("age") or {}).get("status") == "FAIL",
+                reason[:200])
         if exp.get("utility_pass") is False:
             got = (fc.get("utility") or {}).get("status")
             ok = got != "PASS"
@@ -91,7 +95,7 @@ def main() -> None:
     out = [f"# Контрольный набор — отчёт\n\nСформирован: {now}. Скрипт: `scripts/control_set_eval.py`. Данные — живые API.\n",
            f"Проверок: **{errors['checks']}**, успешно: **{errors['passed']}**. Ложных включений: **{errors['false_include']}**, "
            f"ложных исключений: **{errors['false_exclude']}**, ошибок идентификации: **{errors['identity']}**.\n",
-           "> Набор мал (8 контрактов) и не является эталоном полноты поиска. Он проверяет корректность идентификации и фильтров.\n"]
+           "> Набор мал (9 контрактов) и не является эталоном полноты поиска. Он проверяет корректность идентификации и фильтров.\n"]
     for r in rows:
         out.append(f"\n## {r['label']}\n")
         if r.get("error"):

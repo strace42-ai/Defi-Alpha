@@ -161,3 +161,8 @@ def test_new_token_of_mature_protocol_flagged():
     f = facts(protocol={"first_tvl_at": "2023-08-28T00:00:00Z"})
     r = F.f_age(f, [], NOW, 90)
     assert r["status"] == "PASS" and "зрелого проекта" in r["reason"] and r["values"]["protocol_age_days"] > 365
+
+
+def test_mature_family_listing_used():
+    f = facts(protocol={"first_tvl_at": "2026-10-22T00:00:00Z", "family_first_listed_at": "2023-08-28T00:00:00Z"})
+    assert "зрелого проекта" in F.f_age(f, [], NOW, 90)["reason"]
