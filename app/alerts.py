@@ -52,9 +52,9 @@ def check_token(uid: str, sym: str, old: dict, new: dict, old_f: dict, new_f: di
     n = 0
     week = now_utc().strftime("%G-W%V")
     # --- обнаружение
-    if new_level in ("B", "C", "D", "E") and (old_level in (None, "A")):
-        n += emit(uid, "new_candidate", "medium", f"{sym}: новый кандидат уровня {new_level}",
-                  "токен прошёл предварительный отбор (возраст/MCAP/просадка не FAIL, рыночный минимум выполнен)",
+    if new_level in ("C", "D", "E") and (old_level in (None, "A", "B")):
+        n += emit(uid, "new_candidate", "medium", f"{sym}: новый DeFi-кандидат уровня {new_level}",
+                  "токен прошёл предварительный отбор и имеет подтверждённую связь с DeFi-протоколом",
                   {"level": new_level}, ["pipeline"], dedup=f"{uid}:new_candidate")
     oa, na = old_f.get("age") or {}, new_f.get("age") or {}
     if oa.get("confidence") == "preliminary" and na.get("confidence") == "confirmed":

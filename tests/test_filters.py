@@ -155,3 +155,9 @@ def test_determinism():
     b = F.evaluate_all(f, [], {"tvl_usd": 1e9, "dex_volume_30d": 1e9}, {"filters": {**S, "max_age_days": 90, "max_circ_mcap_usd": 5e6,
                        "max_drawdown_pct": 86, "vc_fail_categories": ["vc_fund"], "vc_warn_categories": []}}, NOW, "token")
     assert a == b
+
+
+def test_new_token_of_mature_protocol_flagged():
+    f = facts(protocol={"first_tvl_at": "2023-08-28T00:00:00Z"})
+    r = F.f_age(f, [], NOW, 90)
+    assert r["status"] == "PASS" and "зрелого проекта" in r["reason"] and r["values"]["protocol_age_days"] > 365

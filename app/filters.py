@@ -89,6 +89,13 @@ def f_age(facts: dict, manual: list[dict], now: _dt.datetime, max_days: float) -
     if disc_pool and earliest.get("at") and disc_pool > earliest["at"] and days_between(parse_iso(earliest["at"]), parse_iso(disc_pool)) > 7:
         ev.append({"label": "Пул, через который обнаружен токен", "value": disc_pool,
                    "note": "это НОВЫЙ ПУЛ уже торгующегося токена — возраст считается по самому раннему пулу"})
+    proto = facts.get("protocol") or {}
+    p_start = parse_iso(proto.get("first_tvl_at")) or parse_iso(proto.get("listed_at"))
+    if p_start:
+        vals["protocol_age_days"] = round(days_between(p_start, now), 1)
+        ev.append({"label": "Возраст протокола (первый TVL/листинг DefiLlama)", "value": p_start.date().isoformat(),
+                   "source": "defillama", "note": f"{vals['protocol_age_days']:.0f} дн."})
+    young_token_old_project = bool(p_start and age <= max_days and days_between(p_start, start) > 180)
     if age > max_days:
         return R("age", FAIL, f"Возраст {age:.0f} дн. > {max_days:.0f} дн. (основа: {basis}, {start.date()})",
                  confidence="confirmed" if conf == "confirmed" else "preliminary", evidence=ev, values=vals)
@@ -96,9 +103,13 @@ def f_age(facts: dict, manual: list[dict], now: _dt.datetime, max_days: float) -
         return R("age", UNKNOWN, f"Возраст по торгам {age:.0f} дн., но {warn}", evidence=ev, values=vals,
                  needs=["Проверить дату TGE и ранние пулы"])
     note = "" if conf == "confirmed" else " — ПРЕДВАРИТЕЛЬНО: TGE не подтверждён"
+    if young_token_old_project:
+        note += (f". ВНИМАНИЕ: токен новый, но протокол работает с {p_start.date()} — возможна миграция/новый токен "
+                 "зрелого проекта")
     return R("age", PASS, f"Возраст {age:.0f} дн. ≤ {max_days:.0f} (основа: {basis}, {start.date()}){note}",
              confidence=conf, evidence=ev, values=vals,
-             needs=[] if conf == "confirmed" else ["Подтвердить дату TGE по официальным источникам"])
+             needs=([] if conf == "confirmed" else ["Подтвердить дату TGE по официальным источникам"])
+             + (["Проверить, не является ли токен миграцией/заменой токена зрелого проекта"] if young_token_old_project else []))
 
 
 # ---------------------------------------------------------------- 2. MCAP

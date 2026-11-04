@@ -53,10 +53,28 @@ def evaluate(uid: str, old_facts: dict | None = None) -> dict:
     if health:
         facts["chain_health"] = {k: health.get(k) for k in ("tvl_usd", "tvl_change_30d", "tvl_change_90d", "stables_usd",
                                                              "stables_change_30d", "dex_volume_30d", "at")}
+    # самый ранний известный пул — всегда из БД (в т.ч. пулы, полученные быстрым обогащением)
+    er = db.q1("SELECT uid, dex, name, pool_created_at, sources FROM pools WHERE (base_uid=? OR quote_uid=?) "
+               "AND pool_created_at IS NOT NULL ORDER BY pool_created_at ASC LIMIT 1", (uid, uid))
+    if er and (not facts.get("earliest_pool") or er["pool_created_at"] < (facts["earliest_pool"].get("at") or "9999")):
+        facts["earliest_pool"] = {"at": er["pool_created_at"], "pool": er["uid"], "dex": er["dex"], "name": er["name"],
+                                  "sources": loads(er["sources"], []),
+                                  "note": "дата создания самого раннего ИЗВЕСТНОГО пула; более ранние пулы вне покрытия возможны"}
     if tok["first_seen_at"] and "discovery_pool_created_at" not in facts:
         r = db.q1("SELECT MIN(pool_created_at) m FROM pools WHERE (base_uid=? OR quote_uid=?) AND sources LIKE '%new_pools%'", (uid, uid))
         if r and r["m"]:
             facts["discovery_pool_created_at"] = r["m"]
+    # капитализации по данным быстрого обогащения (если углублённого анализа ещё не было)
+    if not facts.get("price") or facts["price"].get("value") is None:
+        gp = (facts.get("gt") or {}).get("price_usd")
+        dsx = facts.get("ds") or {}
+        dp = dsx.get("price_usd") if dsx.get("side") == "base" else None
+        if gp or dp:
+            facts["price"] = {"value": gp or dp, "source": "geckoterminal" if gp else "dexscreener", "confidence": "estimated",
+                              "method": "цена топ-пула (качество пулов ещё не проверялось)", "at": now_iso()}
+    if facts.get("price") and (facts.get("gt") or facts.get("ds")):
+        from .enrich import compute_caps
+        compute_caps(uid, facts)
     man = manual_facts(uid)
     now = now_utc()
     if tok["asset_class"] in ("quote",):
