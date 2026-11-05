@@ -272,7 +272,7 @@ def dashboard():
         "scheduler_enabled": s.get("scheduler_enabled"),
         "jobs": runner.status(),
         "last_jobs": db.rows_to_dicts(db.q("SELECT * FROM jobs ORDER BY id DESC LIMIT 6")),
-        "top": best()["rows"][:10],
+        "top": best(limit=10, offset=0, search="", chain="", level="", status="", mcap_min=None, mcap_max=None, start_from="", start_to="", sort="", order="desc")["rows"],
         "hidden": db.q1("SELECT COUNT(*) n FROM hidden_tokens WHERE active=1")["n"],
         "mcap_types": {r["t"] or "нет оценки": r["n"] for r in db.q("SELECT json_extract(facts,'$.mcap.type') t, COUNT(*) n FROM tokens "
                                                                    "WHERE asset_class='token' GROUP BY t")},
@@ -301,19 +301,83 @@ def _coverage_summary() -> list[dict]:
 def tokens(search: str = "", chain: str = "", status: str = "", level: str = "", show_service: bool = False,
            only_watch: bool = False, limit: int = Query(500, le=5000), offset: int = 0, sort: str = "default", order: str = "desc",
            mode: str = "default"):
+    if sort and sort != "default":
+        # сортировка по любому столбцу (в т.ч. вычисляемому: MCAP, просадка, ликвидность) — по ВСЕЙ выборке, затем страница
+        total, rows = _query_tokens(search, chain, status, level, show_service, only_watch, 1_000_000, 0, "default", order, mode=mode)
+        rows = sort_rows(rows, sort, order)[offset:offset + limit]
+        return {"total": total, "rows": rows, "modes": MODES, "sort": sort, "order": order}
     total, rows = _query_tokens(search, chain, status, level, show_service, only_watch, limit, offset, sort, order, mode=mode)
     return {"total": total, "rows": rows, "modes": MODES}
 
 
+LEVEL_RANK = {"A": 1, "B": 2, "C": 3, "D": 4, "E": 5}
+STATUS_RANK = {"PASS": 6, "MANUAL REVIEW": 5, "UNKNOWN": 4, "STALE DATA": 3, "DATA ERROR": 2, "FAIL": 1}
+
+
+def sort_rows(rows: list[dict], key: str, order: str = "asc") -> list[dict]:
+    """Сортировка всего результата (не только страницы). Пустые/неизвестные значения — всегда внизу в обоих направлениях;
+    при равенстве — стабильный дополнительный ключ (uid). Уровни и статусы — по смысловому порядку."""
+    desc = order.lower() == "desc"
+
+    def val(r):
+        v = r.get(key)
+        if key == "level":
+            v = LEVEL_RANK.get(v)
+        elif key == "status" or key.startswith("f_"):
+            v = STATUS_RANK.get(v)
+        if isinstance(v, str):
+            return v.lower()
+        return v
+    have = [r for r in rows if val(r) is not None and val(r) != ""]
+    none = [r for r in rows if val(r) is None or val(r) == ""]
+    have.sort(key=lambda r: r.get("uid") or "")
+    have.sort(key=val, reverse=desc)
+    none.sort(key=lambda r: r.get("uid") or "")
+    return have + none
+
+
 @app.get("/api/best")
-def best():
-    """Автоматический рейтинг лучших DeFi-кандидатов (без скрытых пользователем)."""
+def best(limit: int = Query(None, ge=1, le=2000), offset: int = Query(0, ge=0), search: str = "", chain: str = "", level: str = "",
+         status: str = "", mcap_min: float | None = None, mcap_max: float | None = None, start_from: str = "", start_to: str = "",
+         sort: str = "", order: str = "desc"):
+    """Рейтинг лучших DeFi-кандидатов (без скрытых пользователем) — ВЕСЬ, с поиском, фильтрами, сортировкой и пагинацией.
+    Фильтр по сети показывает лучших в этой сети независимо от того, попали ли они в глобальную первую страницу."""
     from .pipeline import best_candidates
-    uids = best_candidates(int(config.load_settings().get("top_candidates_n", 30)))
-    _, rows = _query_tokens(uids=uids, limit=len(uids) or 1, show_service=True)
-    order = {u: i for i, u in enumerate(uids)}
-    rows.sort(key=lambda r: order.get(r["uid"], 999))
-    return {"total": len(rows), "rows": rows}
+    page = int(limit or config.load_settings().get("top_candidates_n", 30))
+    uids = best_candidates(1_000_000)
+    rank = {u: i + 1 for i, u in enumerate(uids)}
+    _, rows = _query_tokens(uids=uids, limit=len(uids) or 1, show_service=True, search=search, chain=chain, level=level, status=status)
+    rows.sort(key=lambda r: rank.get(r["uid"], 10 ** 9))
+    chain_pos: dict[str, int] = {}
+    all_chain = {}
+    for u in uids:  # место в своей сети по глобальному рейтингу
+        ck = u.split(":")[0]
+        chain_pos[ck] = chain_pos.get(ck, 0) + 1
+        all_chain[u] = chain_pos[ck]
+    for r in rows:
+        r["rank"], r["chain_rank"] = rank.get(r["uid"]), all_chain.get(r["uid"])
+        r["mcap_sort"] = r.get("mcap") if r.get("mcap") is not None else r.get("mcap_high")
+
+    def keep(r):
+        m = r["mcap_sort"]
+        if mcap_min is not None and (m is None or m < mcap_min):
+            return False
+        if mcap_max is not None and (m is None or m > mcap_max):
+            return False
+        ft = (r.get("first_trade") or "")[:10]
+        if start_from and (not ft or ft < start_from):
+            return False
+        if start_to and (not ft or ft > start_to):
+            return False
+        return True
+    rows = [r for r in rows if keep(r)]
+    if sort:
+        rows = sort_rows(rows, "mcap_sort" if sort == "mcap" else sort, order)
+    counts: dict[str, int] = {}
+    for u in uids:
+        counts[u.split(":")[0]] = counts.get(u.split(":")[0], 0) + 1
+    return {"total": len(rows), "total_ranked": len(uids), "offset": offset, "limit": page, "rows": rows[offset:offset + page],
+            "by_chain": counts, "sort": sort or "rank", "order": order}
 
 
 @app.get("/api/hidden")

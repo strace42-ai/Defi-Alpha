@@ -96,3 +96,8 @@ details > summary { cursor: pointer; color: var(--text-secondary); }
 .fb.ev-e { border-color: var(--warn); color: var(--warn); }
 .fb.ev-u { color: var(--text-muted); }
 .fb.ev-bad { border-color: var(--bad); color: var(--bad); }
+
+/* сортировка столбцов */
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--accent); }
+th[data-arrow]:not([data-arrow=""])::after { content: " " attr(data-arrow); color: var(--accent); }

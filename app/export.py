@@ -10,7 +10,7 @@ COLUMNS = [
     ("price", "Цена, $"), ("mcap", "MCAP (circ.), $"), ("mcap_type", "Тип MCAP"), ("mcap_low", "MCAP от, $"), ("mcap_high", "MCAP до, $"), ("mcap_basis", "Основа MCAP"),
     ("circ_supply", "Circulating supply"), ("total_supply", "Total supply"), ("fdv_total", "FDV (totalSupply), $"),
     ("fdv_max", "FDV (max), $"), ("liquidity", "Ликвидность, $"), ("volume", "Объём 24ч, $"), ("drawdown", "Просадка от ATH, %"),
-    ("f_age", "Возраст"), ("f_mcap", "MCAP"), ("f_drawdown", "Просадка"), ("f_utility", "DeFi-утилити"),
+    ("f_age", "TGE / возраст"), ("f_mcap", "MCAP"), ("f_drawdown", "Просадка"), ("f_utility", "DeFi-утилити"),
     ("f_ecosystem", "Экосистема"), ("level", "Уровень"), ("status", "Итоговый статус"), ("status_reason", "Причина"),
     ("score_preliminary", "Оценка (предв.)"), ("score_confirmed", "Подтверждённые баллы"), ("score_max_verifiable", "Проверяемый максимум"),
     ("confidence", "Достоверность"), ("protocol", "Протокол DefiLlama"), ("first_seen_at", "Обнаружен (UTC)"),

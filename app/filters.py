@@ -15,7 +15,7 @@ PASS, FAIL, UNKNOWN = "PASS", "FAIL", "UNKNOWN"
 
 # v2: пять обязательных фильтров. Финансирование (VC) — аналитический показатель риска, НЕ фильтр (см. funding_analysis).
 FILTER_NAMES = {
-    "age": "Возраст",
+    "age": "TGE / возраст",
     "mcap": "Капитализация (circulating)",
     "drawdown": "Просадка от ATH",
     "utility": "Реальная утилити",
@@ -42,7 +42,28 @@ def R(key: str, status: str, reason: str, *, confidence: str | None = None, evid
 
 
 # ---------------------------------------------------------------- 1. Возраст
-def f_age(facts: dict, manual: list[dict], now: _dt.datetime, max_days: float) -> dict:
+def _age_fixed(start, basis, conf, dates, ev, vals, from_date, warn, p_start) -> dict:
+    """Режим A: TGE не раньше фиксированной даты. Дата не сдвигается со временем — проект не выпадает через 90 дней.
+    PASS — только при подтверждённом TGE; торговля/пул раньше даты доказывает, что токен старше (FAIL);
+    без подтверждённого TGE — UNKNOWN (дата первого пула/сделки показывается как предварительный ориентир)."""
+    cutoff = parse_iso(f"{from_date}T00:00:00Z")
+    vals = {**vals, "mode": "fixed_date", "from_date": from_date}
+    if start < cutoff:
+        return R("age", FAIL, f"Начало обращения {start.date()} раньше фиксированной даты {from_date} (основа: {basis})",
+                 confidence="confirmed", evidence=ev, values=vals)
+    if dates["first_onchain_mint"] and dates["first_onchain_mint"] < cutoff:
+        return R("age", UNKNOWN, f"Торги с {start.date()}, но первый mint {dates['first_onchain_mint'].date()} — раньше {from_date}: "
+                                 "проверьте, нет ли ранних пулов вне покрытия", evidence=ev, values=vals, needs=["Проверить дату TGE"])
+    if conf == "confirmed":
+        note = f". Протокол старше токена (с {p_start.date()}) — возможен новый токен зрелого проекта" if p_start and days_between(p_start, start) > 180 else ""
+        return R("age", PASS, f"TGE {start.date()} ≥ {from_date} (основа: {basis}){note}", confidence="confirmed", evidence=ev, values=vals)
+    return R("age", UNKNOWN, f"TGE не подтверждён; предварительный ориентир — {basis} {start.date()} (не раньше {from_date}, "
+                             "но это не доказанный TGE)" + (f". {warn}" if warn else ""),
+             evidence=ev, values={**vals, "preliminary_start": start.isoformat()}, needs=["Подтвердить дату TGE (официальный источник)"])
+
+
+def f_age(facts: dict, manual: list[dict], now: _dt.datetime, max_days: float, mode: str = "max_age",
+          from_date: str | None = None) -> dict:
     ev = []
     tge = next((m for m in manual if m["fact_key"] == "tge_date" and m.get("value")), None)
     first_trade = (facts.get("ath") or {}).get("first_trade_at")
@@ -98,6 +119,8 @@ def f_age(facts: dict, manual: list[dict], now: _dt.datetime, max_days: float) -
         ev.append({"label": "Возраст протокола (первый TVL/листинг DefiLlama)", "value": p_start.date().isoformat(),
                    "source": "defillama", "note": f"{vals['protocol_age_days']:.0f} дн."})
     young_token_old_project = bool(p_start and age <= max_days and days_between(p_start, start) > 180)
+    if mode == "fixed_date" and from_date:
+        return _age_fixed(start, basis, conf, dates, ev, vals, from_date, warn, p_start)
     if age > max_days:
         return R("age", FAIL, f"Возраст {age:.0f} дн. > {max_days:.0f} дн. (основа: {basis}, {start.date()})",
                  confidence="confirmed" if conf == "confirmed" else "preliminary", evidence=ev, values=vals)
@@ -330,7 +353,7 @@ def evaluate_all(facts: dict, manual: list[dict], health: dict | None, settings:
                  asset_class: str | None) -> dict[str, dict]:
     fs = settings["filters"]
     return {
-        "age": f_age(facts, manual, now, float(fs["max_age_days"])),
+        "age": f_age(facts, manual, now, float(fs["max_age_days"]), fs.get("tge_mode", "max_age"), fs.get("tge_from_date")),
         "mcap": f_mcap(facts, float(fs["max_circ_mcap_usd"]), manual),
         "drawdown": f_drawdown(facts, float(fs["max_drawdown_pct"])),
         "utility": f_utility(facts, manual, asset_class),

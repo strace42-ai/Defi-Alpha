@@ -191,6 +191,11 @@ def discover_top_pools(chain_key: str, progress: Progress | None = None) -> dict
     s = config.load_settings()
     pages = int(s["discovery"]["historical_top_pools_pages"])
     max_age = float(s["filters"]["max_age_days"])
+    if s["filters"].get("tge_mode") == "fixed_date" and s["filters"].get("tge_from_date"):
+        # исторический добор — пулы не старше фиксированной даты (а не скользящих N дней)
+        fd = parse_iso(f"{s['filters']['tge_from_date']}T00:00:00Z")
+        if fd:
+            max_age = max(1.0, days_between(fd, now_utc()))
     new_tokens: list[str] = []
     got = 0
     err = None

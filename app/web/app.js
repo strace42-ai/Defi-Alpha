@@ -125,7 +125,7 @@ async function liveTick() {
       want = (LIVE.tokenUpdated && d.token_updated_at !== LIVE.tokenUpdated) || (LIVE.tokenEvents != null && d.token_events !== LIVE.tokenEvents);
       LIVE.tokenUpdated = d.token_updated_at; LIVE.tokenEvents = d.token_events;
     } else if (r.name === "alerts") want = (d.new_alerts || []).length > 0;
-    else if (["scanner", "dashboard", "review", "watchlist", "hidden", "tokenomics"].includes(r.name)) want = changed && Date.now() - LIVE.lastSoft > 15000;
+    else if (["scanner", "dashboard", "review", "watchlist", "hidden", "tokenomics", "best"].includes(r.name)) want = changed && Date.now() - LIVE.lastSoft > 15000;
     LIVE.since = d.now;
     if (want) {
       if (userIsEditing()) { $("#liveNote").classList.remove("hidden"); }
@@ -149,10 +149,11 @@ async function render(soft = false) {
   document.querySelectorAll("#nav a").forEach(a => a.classList.toggle("active", a.dataset.r === r.name || (r.name === "token" && a.dataset.r === "scanner")));
   const v = $("#view");
   try {
-    const fn = { setup: vSetup, dashboard: vDashboard, scanner: vScanner, token: vToken, review: vReview, watchlist: vWatch, hidden: vHidden, tokenomics: vTokenomics, alerts: vAlerts, sources: vSources, settings: vSettings, ...(window.EXTRA_VIEWS || {}) }[r.name] || vDashboard;
+    const fn = { setup: vSetup, dashboard: vDashboard, scanner: vScanner, token: vToken, review: vReview, watchlist: vWatch, hidden: vHidden, tokenomics: vTokenomics, best: vBest, alerts: vAlerts, sources: vSources, settings: vSettings, ...(window.EXTRA_VIEWS || {}) }[r.name] || vDashboard;
     if (r.name === "settings" && soft) return;  // настройки — только по действию пользователя
     if (!soft || !["scanner", "token"].includes(r.name)) clearCharts();
     await fn(v, r.arg, soft);
+    sortableTables();  // сохранённая сортировка применяется сразу, без мелькания исходного порядка
     if (sc) restoreScroll(sc);
   } catch (e) { if (!soft) v.innerHTML = `<div class="warnbox">Ошибка: ${esc(e.message)}</div>`; }
 }
@@ -178,7 +179,7 @@ async function vDashboard(v) {
     ${tile("Скрыто мной", `<a href="#/hidden">${num(d.hidden)}</a>`, "из лучших кандидатов")}
     ${tile("MCAP по типам", `<span style="font-size:15px">подтв. ${num((d.mcap_types || {}).CONFIRMED || 0)} · оценка ${num((d.mcap_types || {}).ESTIMATED || 0)} · неизв. ${num((d.mcap_types || {}).UNKNOWN || 0)}</span>`, `<a href="#/scanner" onclick="scanQ.mode='mcap_unclear'">MCAP требует уточнения →</a>`)}
   </div>
-  <h2>Лучшие DeFi-кандидаты <span class="small muted">автоматический рейтинг; скрытые вами не показываются</span></h2>
+  <h2>Лучшие DeFi-кандидаты <span class="small muted">автоматический рейтинг; скрытые вами не показываются · <a href="#/best">весь рейтинг, поиск и лучшие по сетям →</a></span></h2>
   <div class="card">${tokenTable(d.top, "best")}</div>
   <div class="grid g2">
     <div><h2>Покрытие по сетям (новые пулы)</h2><div class="card">${coverageTable(d.coverage)}</div></div>
@@ -202,17 +203,29 @@ const COLS = [
   ["symbol", "Проект / тикер"], ["chain", "Сеть"], ["address", "Контракт"], ["first_trade", "Начало торгов"], ["age_days", "Возраст"],
   ["price", "Цена"], ["mcap", "MCAP"], ["mcap_type", "Тип MCAP"], ["fdv_total", "FDV"], ["circ_supply", "Circulating"], ["total_supply", "Total supply"],
   ["liquidity", "Ликвидность"], ["volume", "Объём 24ч"], ["drawdown", "От ATH"],
-  ["f_age", "Ф1 Возраст"], ["f_mcap", "Ф2 MCAP"], ["f_drawdown", "Ф3 ATH"], ["f_utility", "Ф4 DeFi"], ["f_ecosystem", "Ф5 Сеть"],
+  ["f_age", "Ф1 TGE"], ["f_mcap", "Ф2 MCAP"], ["f_drawdown", "Ф3 ATH"], ["f_utility", "Ф4 DeFi"], ["f_ecosystem", "Ф5 Сеть"],
   ["level", "Ур."], ["status", "Статус"], ["score_preliminary", "Оценка"], ["confidence", "Достов."],
 ];
-let tableState = { sort: null, dir: -1 };
-function tokenTable(rows, compact = false) {
+const NUM_COLS = ["price", "mcap", "fdv_total", "liquidity", "volume", "drawdown", "age_days", "score_preliminary", "circ_supply", "total_supply", "rank", "chain_rank"];
+const STATUS_RANK = { PASS: 6, "MANUAL REVIEW": 5, UNKNOWN: 4, "STALE DATA": 3, "DATA ERROR": 2, FAIL: 1 };
+const LEVEL_RANK = { A: 1, B: 2, C: 3, D: 4, E: 5 };
+function sortValue(r, k) {  // значение для сортировки столбца (числа — числами; уровни и статусы — по смысловому порядку)
+  if (k === "mcap") return r.mcap ?? r.mcap_high;
+  if (k === "level") return LEVEL_RANK[r.level];
+  if (k === "status" || k.startsWith("f_")) return STATUS_RANK[r[k]];
+  if (k === "first_trade") return r.first_trade ? Date.parse(r.first_trade) : null;
+  if (k === "symbol") return (r.symbol || "").toLowerCase() || null;
+  if (k === "chain") return r.chain_name || r.chain;
+  return r[k];
+}
+function tokenTable(rows, compact = false, srv = null) {
   if (!rows || !rows.length) return '<span class="muted">нет записей</span>';
-  if (tableState.sort) rows = [...rows].sort((a, b) => { const x = a[tableState.sort], y = b[tableState.sort]; if (x == null) return 1; if (y == null) return -1; return (x > y ? 1 : x < y ? -1 : 0) * tableState.dir; });
-  const cols = (compact ? COLS.filter(c => !["address", "fdv_total", "volume", "confidence", "circ_supply", "total_supply"].includes(c[0])) : COLS)
+  const cols = (compact === "best" ? [["rank", "#"], ["chain_rank", "# в сети"]] : [])
+    .concat(compact ? COLS.filter(c => !["address", "fdv_total", "volume", "confidence", "circ_supply", "total_supply"].includes(c[0])) : COLS)
     .concat(compact === "best" ? [["_hide", ""]] : []);
-  return `<table class="tok"><thead><tr>${cols.map(c => `<th data-k="${c[0]}" class="${["price", "mcap", "fdv_total", "liquidity", "volume", "drawdown", "age_days", "score_preliminary", "circ_supply", "total_supply"].includes(c[0]) ? "num" : ""}">${c[1]}${tableState.sort === c[0] ? (tableState.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead><tbody>
-  ${rows.map(r => `<tr>${cols.map(c => cell(r, c[0])).join("")}</tr>`).join("")}</tbody></table>`;
+  const sv = (r, k) => { const v = sortValue(r, k); return v == null || v === "" ? "" : esc(v); };
+  return `<table class="tok"${srv ? ` data-srv="${esc(srv.name)}" data-sort="${esc(srv.sort || "")}" data-dir="${esc(srv.order || "")}"` : ""}><thead><tr>${cols.map(c => `<th data-k="${c[0]}" class="${NUM_COLS.includes(c[0]) ? "num" : ""}">${c[1]}</th>`).join("")}</tr></thead><tbody>
+  ${rows.map(r => `<tr>${cols.map(c => { const h = cell(r, c[0]); return c[0] === "_hide" ? h : h.replace(/^<td/, `<td data-v="${sv(r, c[0])}"`); }).join("")}</tr>`).join("")}</tbody></table>`;
 }
 function cell(r, k) {
   const u = `#/token/${encodeURIComponent(r.uid)}`;
@@ -232,6 +245,8 @@ function cell(r, k) {
     case "liquidity": return `<td class="num">${usd(r.liquidity)}</td>`;
     case "volume": return `<td class="num">${usd(r.volume)}</td>`;
     case "drawdown": return `<td class="num">${r.drawdown == null ? '<span class="muted">н/д</span>' : "−" + r.drawdown.toFixed(0) + "%"}</td>`;
+    case "rank": return `<td class="num">${r.rank ?? '<span class="muted">—</span>'}</td>`;
+    case "chain_rank": return `<td class="num">${r.chain_rank ?? '<span class="muted">—</span>'}</td>`;
     case "level": return `<td><span class="lvl" title="${esc(META.levels[r.level] || "")}">${esc(r.level)}</span></td>`;
     case "status": return `<td title="${esc(r.status_reason || "")}">${r.last_market_at || r.status !== "UNKNOWN" ? st(r.status) : '<span class="muted small">ожидает анализа</span>'}</td>`;
     case "score_preliminary": return `<td class="num" title="подтверждено ${r.score_confirmed ?? "—"} из проверяемых ${r.score_max_verifiable ?? "—"}">${r.score_preliminary == null ? '<span class="muted">—</span>' : r.score_preliminary.toFixed(0) + `<span class="muted small"> /${(r.score_max_verifiable || 0).toFixed(0)}</span>`}</td>`;
@@ -291,20 +306,112 @@ async function hideToken(uid) {
   toast("Скрыт из лучших кандидатов. Найти и восстановить — во вкладке «Скрытые мной».");
   render(true);
 }
-function bindSort(container, rerender) {
-  container.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => { const k = th.dataset.k; tableState.dir = tableState.sort === k ? -tableState.dir : -1; tableState.sort = k; rerender(); });
+function bindSort() { /* сортировка всех таблиц — общий механизм sortableTables() ниже */ }
+
+/* ---------- сортировка любой таблицы: ▲ по возрастанию → ▼ по убыванию → по умолчанию ----------
+   Пустые значения (н/д, —, UNKNOWN) — всегда внизу; при равенстве — исходный порядок. Состояние — отдельно для каждой таблицы,
+   сохраняется при автообновлении (и в браузере между сеансами). Таблицы с data-srv сортируются на сервере (весь результат). */
+const SORTS = (() => { try { return JSON.parse(localStorage.getItem("das_sorts") || "{}"); } catch { return {}; } })();
+const saveSorts = () => { try { localStorage.setItem("das_sorts", JSON.stringify(SORTS)); } catch { } };
+const SRV_SORT = {};
+const NULL_TXT = new Set(["", "н/д", "—", "-", "–", "нет", "нет данных", "неизвестно", "unknown", "?", "n/a", "ожидает анализа"]);
+function cellValue(td) {
+  if (!td) return null;
+  if (td.dataset.v !== undefined) { const v = td.dataset.v; if (v === "") return null; const n = Number(v); return isNaN(n) ? v.toLowerCase() : n; }
+  const t = td.textContent.replace(/[\s\u00a0\u202f]+/g, " ").trim(), low = t.toLowerCase();
+  if (NULL_TXT.has(low) || low.startsWith("н/д") || low.startsWith("нет данных") || low.startsWith("неизвестно")) return null;
+  const up = t.toUpperCase().replace(/^[✓✗?!]\s*/, "");
+  if (STATUS_RANK[up] !== undefined) return STATUS_RANK[up];
+  let m = t.match(/^(\d{2})\.(\d{2})\.(\d{4})(?:,?\s*(\d{2}):(\d{2}))?/);
+  if (m) return Date.UTC(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0));
+  m = t.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/);
+  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0));
+  m = t.replace(/\u2212/g, "-").match(/^[~≈≥≤<>]?\s*([+-]?)\s*\$?\s*(\d[\d ]*(?:[.,]\d+)?)\s*(млрд|млн|тыс\.?|[kmb](?![a-zа-я]))?\s*(%|×|x|дн\.?|п\.п\.)?(?:\s.*)?$/i);
+  if (m) {
+    let n = parseFloat(m[2].replace(/ /g, "").replace(",", "."));
+    n *= { "млрд": 1e9, "млн": 1e6, "тыс.": 1e3, "тыс": 1e3, k: 1e3, m: 1e6, b: 1e9 }[(m[3] || "").toLowerCase()] || 1;
+    if (m[1] === "-") n = -n;
+    if (!isNaN(n)) return n;
+  }
+  return low;
 }
+function cmpVals(a, b) {
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "number") return -1;
+  if (typeof b === "number") return 1;
+  return String(a).localeCompare(String(b), "ru");
+}
+function tableParts(table) {
+  const head = [...table.rows].find(r => r.querySelector("th"));
+  if (!head) return null;
+  const rows = [...table.rows].filter(r => r !== head && r.querySelector("td") && r.parentNode === table.rows[table.rows.length - 1].parentNode);
+  return { head, rows };
+}
+function applySort(table, st) {
+  const p = tableParts(table); if (!p || p.rows.length < 2) return;
+  const body = p.rows[0].parentNode;
+  p.rows.forEach((r, i) => { if (r.dataset.i === undefined) r.dataset.i = i; });
+  let ordered;
+  if (!st || !st.dir) ordered = [...p.rows].sort((a, b) => a.dataset.i - b.dataset.i);
+  else {
+    const withV = p.rows.map(r => ({ r, v: cellValue(r.cells[st.col]) }));
+    const have = withV.filter(x => x.v !== null), none = withV.filter(x => x.v === null);
+    have.sort((x, y) => cmpVals(x.v, y.v) * st.dir || (x.r.dataset.i - y.r.dataset.i));
+    none.sort((x, y) => x.r.dataset.i - y.r.dataset.i);
+    ordered = have.concat(none).map(x => x.r);
+  }
+  ordered.forEach(r => body.appendChild(r));
+  [...p.head.cells].forEach((th, i) => { th.dataset.arrow = st && st.dir && st.col === i ? (st.dir > 0 ? "▲" : "▼") : ""; });
+}
+function sortableTables(root) {
+  const tables = [...(root || document).querySelectorAll("#view table, #modal table")];
+  tables.forEach((table, ti) => {
+    if (table.dataset.sb === "1") return;
+    const p = tableParts(table); if (!p) return;
+    table.dataset.sb = "1";
+    const key = route().name + ":" + [...p.head.cells].map(c => c.textContent.trim()).join("|");
+    if (table.dataset.srv) {  // серверная сортировка: состояние приходит в атрибутах таблицы
+      [...p.head.cells].forEach((th, i) => {
+        th.dataset.arrow = th.dataset.k && th.dataset.k === table.dataset.sort ? (table.dataset.dir === "asc" ? "▲" : "▼") : "";
+        if (!th.dataset.k || th.dataset.k.startsWith("_")) return;
+        th.classList.add("sortable");
+        th.onclick = () => {
+          const k = th.dataset.k, cur = table.dataset.sort === k ? table.dataset.dir : "";
+          const next = cur === "" ? "asc" : cur === "asc" ? "desc" : "";
+          (SRV_SORT[table.dataset.srv] || (() => { }))(next ? k : "", next);
+        };
+      });
+      return;
+    }
+    [...p.head.cells].forEach((th, i) => {
+      if (th.colSpan > 1) return;
+      th.classList.add("sortable");
+      th.onclick = () => {
+        const cur = SORTS[key] && SORTS[key].col === i ? SORTS[key].dir : 0;
+        const dir = cur === 0 ? 1 : cur === 1 ? -1 : 0;
+        if (dir) SORTS[key] = { col: i, dir }; else delete SORTS[key];
+        saveSorts(); applySort(table, SORTS[key]);
+      };
+    });
+    if (SORTS[key]) applySort(table, SORTS[key]);
+  });
+}
+let _sortPending = false;
+new MutationObserver(() => { if (_sortPending) return; _sortPending = true; requestAnimationFrame(() => { _sortPending = false; sortableTables(); }); })
+  .observe(document.body, { childList: true, subtree: true });
 
 /* ---------- Сканер ---------- */
-let scanQ = { search: "", chain: "", status: "", level: "", show_service: false, mode: "default" };
+let scanQ = { search: "", chain: "", status: "", level: "", show_service: false, mode: "default", sort: "", order: "" };
+SRV_SORT.scanner = (k, o) => { scanQ.sort = k; scanQ.order = o; render(true); };
 async function vScanner(v, arg, soft) {
-  const qs = new URLSearchParams({ ...scanQ, show_service: scanQ.show_service ? "true" : "false", limit: 2000 }).toString();
+  const qs = new URLSearchParams({ ...scanQ, show_service: scanQ.show_service ? "true" : "false", limit: 2000, sort: scanQ.sort || "default", order: scanQ.order || "desc" }).toString();
   const d = await api("/api/tokens?" + qs);
+  // всё загружено — сортировка в таблице; иначе — на сервере по всей выборке
+  const srv = d.total > d.rows.length ? { name: "scanner", sort: scanQ.sort, order: scanQ.order } : null;
   if (soft && $("#tw")) {  // мягкое обновление: только данные таблицы; поиск, фильтры и сортировка не трогаются
     const sc = $("#tw").scrollTop;
     $("#scanCount").innerHTML = `${num(d.total)} токенов${d.total > d.rows.length ? `, показано ${d.rows.length}` : ""} · обновлено ${dt(new Date().toISOString())}`;
-    const rr = () => { $("#tw").innerHTML = tokenTable(d.rows); bindSort($("#tw"), rr); };
-    rr(); $("#tw").scrollTop = sc;
+    $("#tw").innerHTML = tokenTable(d.rows, false, srv); $("#tw").scrollTop = sc;
     return;
   }
   const chains = Object.entries(META.chains).map(([k, c]) => `<option value="${k}" ${scanQ.chain === k ? "selected" : ""}>${esc(c.name)}</option>`).join("");
@@ -324,10 +431,8 @@ async function vScanner(v, arg, soft) {
     <a href="/api/export.csv?${qs}"><button>CSV</button></a> <a href="/api/export.xlsx?${qs}"><button>XLSX</button></a>
   </div>
   <div class="small muted" style="margin-bottom:8px">Таблица обновляется автоматически. * — предварительный PASS. MCAP: «подтв.» — circulating подтверждён первоисточником, «оценка» — агрегатор/расчёт, «граница» — известна только верхняя граница. Нажмите на MCAP, чтобы увидеть расчёт.</div>
-  <div class="tablewrap" id="tw">${tokenTable(d.rows)}</div>`;
-  const rr = () => { $("#tw").innerHTML = tokenTable(d.rows); bindSort($("#tw"), rr); };
-  bindSort($("#tw"), rr);
-  const apply = () => { scanQ = { search: $("#q").value.trim(), chain: $("#fc").value, status: $("#fs").value, level: $("#fl").value, show_service: $("#fsv").checked, mode: $("#fm").value }; tableState.sort = null; render(); };
+  <div class="tablewrap" id="tw">${tokenTable(d.rows, false, srv)}</div>`;
+  const apply = () => { scanQ = { search: $("#q").value.trim(), chain: $("#fc").value, status: $("#fs").value, level: $("#fl").value, show_service: $("#fsv").checked, mode: $("#fm").value, sort: scanQ.sort, order: scanQ.order }; render(); };
   $("#fm").onchange = apply;
   $("#apply").onclick = apply; $("#q").onkeydown = e => { if (e.key === "Enter") apply(); };
   $("#addTok").onclick = async () => {
@@ -335,6 +440,40 @@ async function vScanner(v, arg, soft) {
     const address = prompt("Адрес контракта / mint:"); if (!address) return;
     try { const r = await api("/api/tokens/add", { method: "POST", body: { chain, address } }); toast("Токен добавлен, анализ в очереди"); location.hash = "#/token/" + encodeURIComponent(r.uid); } catch (e) { toast("Ошибка: " + e.message); }
   };
+}
+
+
+/* ---------- Лучшие кандидаты: весь рейтинг, фильтры, лучшие по сетям ---------- */
+let bestQ = (() => { try { return JSON.parse(localStorage.getItem("das_best") || "null") || null; } catch { return null; } })() ||
+  { search: "", chain: "", level: "", status: "", mcap_max: "", start_from: "", sort: "", order: "", offset: 0, limit: 50 };
+const saveBest = () => { try { localStorage.setItem("das_best", JSON.stringify(bestQ)); } catch { } };
+SRV_SORT.best = (k, o) => { bestQ.sort = k; bestQ.order = o; bestQ.offset = 0; saveBest(); render(true); };
+async function vBest(v, arg, soft) {
+  const p = { ...bestQ }; Object.keys(p).forEach(k => { if (p[k] === "" || p[k] == null) delete p[k]; });
+  const d = await api("/api/best?" + new URLSearchParams(p).toString());
+  const table = () => tokenTable(d.rows, "best", { name: "best", sort: bestQ.sort, order: bestQ.order });
+  const info = () => `${num(d.total)} из ${num(d.total_ranked)} в рейтинге · показаны ${num(d.total ? d.offset + 1 : 0)}–${num(d.offset + d.rows.length)}`;
+  if (soft && $("#bw")) { const sc = window.scrollY; $("#bw").innerHTML = table(); $("#bInfo").textContent = info(); window.scrollTo(0, sc); return; }
+  const chains = Object.entries(META.chains).map(([k, c]) => `<option value="${k}" ${bestQ.chain === k ? "selected" : ""}>${esc(c.name)} (${num((d.by_chain || {})[k] || 0)})</option>`).join("");
+  v.innerHTML = `<h1>Лучшие DeFi-кандидаты <span class="small muted" id="bInfo">${info()}</span></h1>
+  <div class="small muted">Единый рейтинг всех сетей (уровни C–E без FAIL, без скрытых вами), по предварительной оценке. Выберите сеть, чтобы увидеть её лучших —
+    включая тех, кто не попал в первую страницу глобального рейтинга. Столбцы «#» — место в общем рейтинге и в своей сети. Сортировка по столбцам — на сервере по всему результату.</div>
+  <form class="toolbar" id="bForm">
+    <input name="search" placeholder="Поиск: тикер, название, адрес" value="${esc(bestQ.search)}" style="min-width:220px">
+    <select name="chain"><option value="">Все сети</option>${chains}</select>
+    <select name="level"><option value="">Уровни C–E</option>${["C", "D", "E", "D,E"].map(l => `<option ${bestQ.level === l ? "selected" : ""}>${l}</option>`).join("")}</select>
+    <select name="status"><option value="">Все статусы</option>${["PASS", "MANUAL REVIEW", "UNKNOWN", "STALE DATA", "DATA ERROR"].map(x => `<option ${bestQ.status === x ? "selected" : ""}>${x}</option>`).join("")}</select>
+    <input name="mcap_max" type="number" placeholder="MCAP ≤ $" value="${esc(bestQ.mcap_max)}" style="width:120px">
+    <label class="small">Начало торгов с <input name="start_from" type="date" value="${esc(bestQ.start_from)}"></label>
+    <select name="limit">${[30, 50, 100, 200].map(n => `<option ${+bestQ.limit === n ? "selected" : ""}>${n}</option>`).join("")}</select>
+    <button class="primary" type="submit">Применить</button> <button type="button" id="bReset">Сбросить</button>
+    <span style="flex:1"></span><button type="button" id="bPrev" ${d.offset > 0 ? "" : "disabled"}>← Назад</button><button type="button" id="bNext" ${d.offset + d.rows.length < d.total ? "" : "disabled"}>Далее →</button>
+  </form>
+  <div class="card tablewrap" id="bw">${table()}</div>`;
+  $("#bForm").onsubmit = e => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); bestQ = { ...bestQ, ...f, offset: 0 }; saveBest(); render(); };
+  $("#bReset").onclick = () => { bestQ = { search: "", chain: "", level: "", status: "", mcap_max: "", start_from: "", sort: "", order: "", offset: 0, limit: 50 }; saveBest(); render(); };
+  $("#bPrev").onclick = () => { bestQ.offset = Math.max(0, d.offset - d.limit); saveBest(); render(); };
+  $("#bNext").onclick = () => { bestQ.offset = d.offset + d.limit; saveBest(); render(); };
 }
 
 /* ---------- Карточка проекта ---------- */
@@ -759,7 +898,9 @@ async function vSettings(v) {
   const fld = (path, label, hint = "") => { const val = path.split(".").reduce((o, k) => o[k], s); return `<label>${esc(label)}<input data-p="${path}" value="${esc(Array.isArray(val) ? val.join(",") : val)}">${hint ? `<span class="muted">${esc(hint)}</span>` : ""}</label>`; };
   v.innerHTML = `<h1>Настройки</h1>
   <div class="card"><h3>Пять обязательных фильтров</h3><form class="inline">
-    ${fld("filters.max_age_days", "Макс. возраст, дней")}${fld("filters.max_circ_mcap_usd", "Макс. circulating MCAP, $")}${fld("filters.max_drawdown_pct", "Макс. просадка от ATH, %")}
+    <label>Фильтр 1: режим<select data-p="filters.tge_mode"><option value="fixed_date" ${s.filters.tge_mode === "fixed_date" ? "selected" : ""}>A — TGE не раньше фиксированной даты (основной)</option><option value="max_age" ${s.filters.tge_mode !== "fixed_date" ? "selected" : ""}>B — возраст не больше N дней (скользящий)</option></select></label>
+    <label>Фиксированная дата TGE (режим A)<input type="date" data-p="filters.tge_from_date" value="${esc(s.filters.tge_from_date || "")}"><span class="muted">не сдвигается со временем; меняется только вами</span></label>
+    ${fld("filters.max_age_days", "Макс. возраст, дней (режим B)")}${fld("filters.max_circ_mcap_usd", "Макс. circulating MCAP, $")}${fld("filters.max_drawdown_pct", "Макс. просадка от ATH, %")}
     ${fld("filters.ath_wick_factor", "Фильтр хвостов свечей, ×", "high > k × тела = аномалия")}${fld("filters.min_pool_liquidity_usd", "Мин. ликвидность пула для цены/ATH, $")}
     ${fld("filters.price_outlier_pct", "Отклонение цены пула от медианы, %")}${fld("filters.mcap_conflict_pct", "Порог конфликта MCAP источников, %")}
     ${fld("filters.vc_fail_categories", "Категории финансирования, считающиеся VC (только анализ рисков, не фильтр)", "через запятую: vc_fund, strategic…")}
@@ -795,7 +936,10 @@ async function vSettings(v) {
       o[ks.at(-1)] = val;
     });
     ns.chains_enabled = [...document.querySelectorAll("[data-chain]")].filter(x => x.checked).map(x => x.dataset.chain);
-    await api("/api/settings", { method: "POST", body: ns }); toast("Настройки сохранены. Нажмите «Пересчитать фильтры», чтобы применить к базе.");
+    await api("/api/settings", { method: "POST", body: ns });
+    const fChanged = JSON.stringify(ns.filters) !== JSON.stringify(s.filters);
+    if (fChanged) { await api("/api/jobs/reevaluate", { method: "POST" }); toast("Настройки сохранены; пересчёт фильтров поставлен в очередь (история решений сохраняется)."); }
+    else toast("Настройки сохранены.");
   };
   $("#reevalS").onclick = async () => { await api("/api/jobs/reevaluate", { method: "POST" }); toast("Пересчёт поставлен в очередь"); pollJobs(); };
   $("#bkBtn").onclick = async () => { await api("/api/jobs/backup", { method: "POST" }); toast("Резервная копия создаётся"); };

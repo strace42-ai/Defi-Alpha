@@ -22,7 +22,9 @@ SECRETS_PATH = DATA_DIR / "secrets.bin"
 
 DEFAULTS: dict[str, Any] = {
     "filters": {
-        "max_age_days": 90,
+        "max_age_days": 90,               # режим B (скользящий): возраст ≤ N дней
+        "tge_mode": "fixed_date",         # fixed_date — основной режим: TGE не раньше фиксированной даты; max_age — режим B
+        "tge_from_date": None,            # фиксированная дата (YYYY-MM-DD); вычисляется ОДИН раз при обновлении и больше не сдвигается
         "max_circ_mcap_usd": 5_000_000,
         "max_drawdown_pct": 86.0,
         "ath_wick_factor": 2.0,          # хвост свечи > N× max(open, close) считается аномалией
@@ -145,6 +147,19 @@ def load_settings(force: bool = False) -> dict[str, Any]:
             except OSError:
                 pass
         _cache = _merge(DEFAULTS, user)
+        if not _cache["filters"].get("tge_from_date"):
+            # однократная миграция: дата = сегодня − действовавший порог возраста; затем фиксируется в файле настроек
+            import datetime as _dt
+            d = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=float(_cache["filters"].get("max_age_days", 90)))).date().isoformat()
+            _cache["filters"]["tge_from_date"] = d
+            user.setdefault("filters", {})["tge_from_date"] = d
+            user.setdefault("_migrations", []).append(f"tge_from_date={d} (однократно из порога {_cache['filters'].get('max_age_days')} дн.)")
+            try:
+                tmp = SETTINGS_PATH.with_suffix(".tmp")
+                tmp.write_text(json.dumps(_merge(DEFAULTS, user), ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(tmp, SETTINGS_PATH)
+            except OSError:
+                pass
         return copy.deepcopy(_cache)
 
 
