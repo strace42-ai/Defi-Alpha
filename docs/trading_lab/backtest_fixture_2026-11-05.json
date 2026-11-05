@@ -1,0 +1,181 @@
+{
+ "experiment": "BT-4f732767d86c-1792540800",
+ "start_ts": 1792540800,
+ "bh_final": 895.594606,
+ "summary": {
+  "1h": {
+   "trader": "1h",
+   "mode": "BACKTEST",
+   "strategy": "S1-1H-sweep-reversal",
+   "version": "1.0.0",
+   "state": "FLAT",
+   "initial": 1000.0,
+   "equity": 1000.0,
+   "cash": 1000.0,
+   "fables_qty": 0.0,
+   "fables_value": 0.0,
+   "net_pnl": 0.0,
+   "net_return_pct": 0.0,
+   "gross_return_pct": 0.0,
+   "realized_pnl": 0.0,
+   "unrealized_pnl": 0.0,
+   "fees": 0.0,
+   "costs_total": 0.0,
+   "closed_trades": 0,
+   "operations": 0,
+   "open_positions": 0,
+   "win_rate": null,
+   "profit_factor": null,
+   "avg_win": null,
+   "avg_loss": null,
+   "expectancy_usd": null,
+   "expectancy_r": null,
+   "max_drawdown_pct": 0.0,
+   "max_loss_streak": 0,
+   "avg_holding_h": null,
+   "exposure_pct": 0.0,
+   "turnover_x": 0.0,
+   "slippage_bps_mean": null,
+   "slippage_bps_median": null,
+   "sample": "INSUFFICIENT_SAMPLE",
+   "validation": "NOT VALIDATED",
+   "cost_model": "conservative-v1",
+   "vs_cash_usd": 0.0,
+   "bh_equity_same_time": 895.594606,
+   "vs_bh_usd": 104.405394,
+   "vs_bh_pp": 10.4405394
+  },
+  "4h": {
+   "trader": "4h",
+   "mode": "BACKTEST",
+   "strategy": "S2-4H-structure-pullback",
+   "version": "1.0.0",
+   "state": "FLAT",
+   "initial": 1000.0,
+   "equity": 1000.0,
+   "cash": 1000.0,
+   "fables_qty": 0.0,
+   "fables_value": 0.0,
+   "net_pnl": 0.0,
+   "net_return_pct": 0.0,
+   "gross_return_pct": 0.0,
+   "realized_pnl": 0.0,
+   "unrealized_pnl": 0.0,
+   "fees": 0.0,
+   "costs_total": 0.0,
+   "closed_trades": 0,
+   "operations": 0,
+   "open_positions": 0,
+   "win_rate": null,
+   "profit_factor": null,
+   "avg_win": null,
+   "avg_loss": null,
+   "expectancy_usd": null,
+   "expectancy_r": null,
+   "max_drawdown_pct": 0.0,
+   "max_loss_streak": 0,
+   "avg_holding_h": null,
+   "exposure_pct": 0.0,
+   "turnover_x": 0.0,
+   "slippage_bps_mean": null,
+   "slippage_bps_median": null,
+   "sample": "INSUFFICIENT_SAMPLE",
+   "validation": "NOT VALIDATED",
+   "cost_model": "conservative-v1",
+   "vs_cash_usd": 0.0,
+   "bh_equity_same_time": 891.861665,
+   "vs_bh_usd": 108.13833499999998,
+   "vs_bh_pp": 10.8138335
+  },
+  "1d": {
+   "trader": "1d",
+   "mode": "BACKTEST",
+   "strategy": "S3-1D-range-breakout",
+   "version": "1.0.0",
+   "state": "WARMUP",
+   "initial": 1000.0,
+   "equity": 1000.0,
+   "cash": 1000.0,
+   "fables_qty": 0.0,
+   "fables_value": 0.0,
+   "net_pnl": 0.0,
+   "net_return_pct": 0.0,
+   "gross_return_pct": 0.0,
+   "realized_pnl": 0.0,
+   "unrealized_pnl": 0.0,
+   "fees": 0.0,
+   "costs_total": 0.0,
+   "closed_trades": 0,
+   "operations": 0,
+   "open_positions": 0,
+   "win_rate": null,
+   "profit_factor": null,
+   "avg_win": null,
+   "avg_loss": null,
+   "expectancy_usd": null,
+   "expectancy_r": null,
+   "max_drawdown_pct": 0.0,
+   "max_loss_streak": 0,
+   "avg_holding_h": null,
+   "exposure_pct": 0.0,
+   "turnover_x": 0.0,
+   "slippage_bps_mean": null,
+   "slippage_bps_median": null,
+   "sample": "INSUFFICIENT_SAMPLE",
+   "validation": "NOT VALIDATED",
+   "cost_model": "conservative-v1",
+   "vs_cash_usd": 0.0,
+   "bh_equity_same_time": 933.762355,
+   "vs_bh_usd": 66.23764500000004,
+   "vs_bh_pp": 6.623764500000004
+  }
+ },
+ "blockers": {
+  "1h": [
+   [
+    "Liquidity sweep swing low",
+    339
+   ],
+   [
+    "История",
+    20
+   ],
+   [
+    "Подтверждение: закрытие выше максимума sweep-свечи",
+    11
+   ],
+   [
+    "Цель ≥ 2 ATR и ≥ 3× круг издержек",
+    1
+   ]
+  ],
+  "4h": [
+   [
+    "История",
+    32
+   ],
+   [
+    "Откат в зону log-Fib 0,382–0,618 или к EMA20",
+    24
+   ],
+   [
+    "Структура вверх (CHoCH_UP, затем без слома вниз)",
+    20
+   ],
+   [
+    "Триггер: бычье закрытие выше high[-1] и разворот MACD hist",
+    9
+   ],
+   [
+    "Чистый R:R до T1 ≥ 1.0",
+    8
+   ]
+  ],
+  "1d": [
+   [
+    "История",
+    15
+   ]
+  ]
+ }
+}
