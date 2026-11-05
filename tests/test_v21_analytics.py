@@ -522,3 +522,29 @@ def test_new_tables_do_not_break_migration_or_2_0_1_code_reading():
     db.init_db()
     v = db.q1("SELECT value FROM meta WHERE key='schema_version'")["value"]
     assert v == "2" and db.q1("SELECT value FROM meta WHERE key='analytics_schema'")["value"] == "1"
+
+
+def test_analytics_cpu_share_is_limited(monkeypatch):
+    """После расчёта токена очередь аналитики делает паузу pause_ratio × время расчёта: в стресс-тесте без этого
+    непрерывный пересчёт отнимал время у котировок и обнаружения (общий GIL процесса)."""
+    momentum_token()
+    for i in range(2):
+        u = _tok(addr="0x" + str(i + 2) * 40, symbol=f"T{i}", facts={"protocol": {"slug": f"s{i}"}})
+        db.ex("UPDATE tokens SET protocol_slug=? WHERE uid=?", (f"s{i}", u))
+    _enable("momentum")
+    orig = momentum.compute
+
+    def busy(u, data):
+        t = _real_time.perf_counter()
+        while _real_time.perf_counter() - t < 0.05:  # 50 мс «вычислений»
+            pass
+        return orig(u, data)
+    monkeypatch.setattr(momentum, "compute", busy)
+    t0 = _real_time.perf_counter()
+    st = analytics.run_module("momentum", deadline_s=30, force=True)
+    took = _real_time.perf_counter() - t0
+    assert st["recomputed"] == 3
+    assert took >= 3 * 0.05 * (1 + 3.0) * 0.9, f"доля времени аналитики не ограничена: {took:.2f} с"
+    stop = threading.Event()
+    stop.set()
+    assert analytics.run_module("momentum", deadline_s=30, force=True, stop=stop)["stopped_reason"] == "остановка программы"

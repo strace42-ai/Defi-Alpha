@@ -250,6 +250,8 @@ def run_module(module: str, *, deadline_s: float | None = None, prog: Callable[[
     cand = uids if uids is not None else impl.candidates()
     state = {r["token_uid"]: dict(r) for r in db.q("SELECT * FROM an_state WHERE module=?", (module,))}
     cand = sorted(cand, key=lambda u: (state.get(u) or {}).get("last_run_at") or "")
+    pause_ratio = float(settings().get("pause_ratio", 3.0))
+    waiter = stop or threading.Event()
     with no_network():
         for uid in cand:
             if time.monotonic() > t_end:
@@ -269,9 +271,15 @@ def run_module(module: str, *, deadline_s: float | None = None, prog: Callable[[
                 if not force and prev.get("input_hash") == h and prev.get("last_status") == "ok":
                     st["unchanged"] += 1
                     continue
+                t_c = time.monotonic()
                 res = impl.compute(uid, data)  # только чтение; вне транзакции
                 _store(module, uid, impl.VERSION, h, snap, res)
                 st["recomputed"] += 1
+                # ограничение доли процессорного времени: Python исполняет потоки по очереди (GIL), поэтому
+                # непрерывный расчёт отнимал бы время у котировок и обнаружения
+                spent = time.monotonic() - t_c
+                if pause_ratio > 0 and spent > 0.002:
+                    waiter.wait(min(5.0, spent * pause_ratio))
             except Exception as e:  # noqa: BLE001 — ошибка аналитики одного токена не влияет на остальные и на сканер
                 st["errors"] += 1
                 db.log_error(f"analytics:{module}", f"{uid}: {type(e).__name__}: {e}")
