@@ -250,7 +250,7 @@ def run_module(module: str, *, deadline_s: float | None = None, prog: Callable[[
     cand = uids if uids is not None else impl.candidates()
     state = {r["token_uid"]: dict(r) for r in db.q("SELECT * FROM an_state WHERE module=?", (module,))}
     cand = sorted(cand, key=lambda u: (state.get(u) or {}).get("last_run_at") or "")
-    pause_ratio = float(settings().get("pause_ratio", 3.0))
+    pause_ratio = float(settings().get("pause_ratio", 6.0))
     waiter = stop or threading.Event()
     with no_network():
         for uid in cand:

@@ -35,6 +35,8 @@ ap.add_argument("--tokens", type=int, default=800)
 ap.add_argument("--events", type=int, default=20000)
 ap.add_argument("--label", default="")
 ap.add_argument("--analytics", action="store_true", help="2.1: включить оба аналитических модуля и непрерывно ставить их расчёт (с force)")
+ap.add_argument("--analytics-realistic", action="store_true",
+                help="2.1: модули включены с настройками по умолчанию (планировщик, интервалы, пересчёт только при изменении данных)")
 args = ap.parse_args()
 
 CODE = Path(args.code_dir).resolve()
@@ -227,6 +229,8 @@ def build_db():
     if args.analytics:
         s.setdefault("analytics", {}).update(momentum_enabled=True, emission_enabled=True,
                                              interval_min={"momentum": 0.2, "emission": 0.2})
+    if args.analytics_realistic:
+        s.setdefault("analytics", {}).update(momentum_enabled=True, emission_enabled=True)
     config.save_settings(s)
     c = sqlite3.connect(str(db.DB_PATH))
     big = dumps({"gt": {"price_usd": 0.04}, "pools": {"items": [{"address": "0x1", "price_usd": 0.04, "liquidity_usd": 1e5}] * 20},
@@ -417,7 +421,8 @@ def main():
            "events_without_ts": null_ts, "inflight_at_stop": inflight, "unfinished_after_wait": still, "scanned_to_block": to_block, "jobs_by_status": jobs_err, "error_log_rows": errlog,
            "error_log_locked": locked_in_log, "latency_ms": lat,
            "tx_stats": dict(getattr(db, "tx_stats", {}) or {}) or "нет (версия без транзакционного слоя)",
-           "analytics": _an_stats(c) if args.analytics else None,
+           "analytics": ({**_an_stats(c), "deferred": __import__("app.analytics", fromlist=["x"])._deferred}
+                         if (args.analytics or args.analytics_realistic) else None),
            "task_errors": dict(Counter((j or "?") for (j,) in c.execute("SELECT job FROM jobs WHERE status='error'").fetchall()))}
     print(json.dumps(res, ensure_ascii=False, indent=1))
     if args.report:

@@ -544,7 +544,7 @@ def test_analytics_cpu_share_is_limited(monkeypatch):
     st = analytics.run_module("momentum", deadline_s=30, force=True)
     took = _real_time.perf_counter() - t0
     assert st["recomputed"] == 3
-    assert took >= 3 * 0.05 * (1 + 3.0) * 0.9, f"доля времени аналитики не ограничена: {took:.2f} с"
+    assert took >= 3 * 0.05 * (1 + 6.0) * 0.9, f"доля времени аналитики не ограничена: {took:.2f} с"
     stop = threading.Event()
     stop.set()
     assert analytics.run_module("momentum", deadline_s=30, force=True, stop=stop)["stopped_reason"] == "остановка программы"
