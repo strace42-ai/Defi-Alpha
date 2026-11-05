@@ -1,0 +1,155 @@
+{
+ "label": "2.1.0, аналитика включена (непрерывный пересчёт)",
+ "code": "2.1.0 (пауза 3×)",
+ "python": "3.13.18",
+ "sqlite": "3.53.1",
+ "duration_s": 189.5,
+ "tokens": 801,
+ "events_initial": 20001,
+ "fault_rate": 0.0,
+ "metrics": {
+  "http_requests": 3631,
+  "user_ok:hide": 163,
+  "user_ok:read_best": 163,
+  "user_ok:unhide": 163,
+  "user_ok:read_tokens": 335,
+  "user_ok:read_token": 335,
+  "user_ok:read_live": 335,
+  "user_ok:watch_add": 134,
+  "user_ok:monitoring_toggle": 33
+ },
+ "unhandled_thread_exceptions": [],
+ "unhandled_count": 0,
+ "lanes_alive": {
+  "fast": true,
+  "main": true,
+  "chain": true,
+  "aux": true,
+  "analytics": true
+ },
+ "scheduler_alive": true,
+ "tasks_done": {
+  "fast": 273,
+  "main": 139,
+  "chain": 23,
+  "aux": 316,
+  "analytics": 38
+ },
+ "integrity_check": "ok",
+ "events_expected_in_scanned_range": 20003,
+ "events_lost": 0,
+ "events_duplicated": 0,
+ "events_without_ts": 0,
+ "inflight_at_stop": {
+  "fast": "quotes",
+  "main": "deep",
+  "chain": "onchain",
+  "aux": "cg",
+  "analytics": "analytics"
+ },
+ "unfinished_after_wait": {},
+ "scanned_to_block": 106001759,
+ "jobs_by_status": {
+  "done": 516,
+  "queued": 247
+ },
+ "error_log_rows": 0,
+ "error_log_locked": 0,
+ "latency_ms": {
+  "probe_write_wait": {
+   "n": 175,
+   "p50": 7.2,
+   "p95": 112.6,
+   "max": 553.0
+  },
+  "hide": {
+   "n": 163,
+   "p50": 13.9,
+   "p95": 135.9,
+   "max": 353.1
+  },
+  "read_best": {
+   "n": 163,
+   "p50": 33.6,
+   "p95": 162.2,
+   "max": 423.3
+  },
+  "unhide": {
+   "n": 163,
+   "p50": 9.7,
+   "p95": 126.6,
+   "max": 346.7
+  },
+  "read_tokens": {
+   "n": 335,
+   "p50": 132.8,
+   "p95": 797.0,
+   "max": 1992.2
+  },
+  "read_token": {
+   "n": 335,
+   "p50": 49.5,
+   "p95": 620.4,
+   "max": 1464.5
+  },
+  "read_live": {
+   "n": 335,
+   "p50": 15.9,
+   "p95": 45.6,
+   "max": 106.9
+  },
+  "watch_add": {
+   "n": 134,
+   "p50": 10.6,
+   "p95": 142.7,
+   "max": 306.8
+  },
+  "monitoring_toggle": {
+   "n": 33,
+   "p50": 9.3,
+   "p95": 88.1,
+   "max": 100.6
+  }
+ },
+ "tx_stats": {
+  "count": 29104,
+  "max_ms": 320.8,
+  "max_where": "onchain.py:326 _timestamps",
+  "slow": 0,
+  "rollbacks": 0,
+  "lock_timeouts": 0,
+  "busy": 0
+ },
+ "analytics": {
+  "runs": [
+   [
+    "emission",
+    16,
+    58,
+    56,
+    0
+   ],
+   [
+    "momentum",
+    22,
+    638,
+    624,
+    0
+   ]
+  ],
+  "state": [
+   [
+    "emission",
+    "ok",
+    12
+   ],
+   [
+    "momentum",
+    "ok",
+    92
+   ]
+  ],
+  "results": 680
+ },
+ "task_errors": {}
+}

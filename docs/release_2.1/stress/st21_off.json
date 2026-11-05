@@ -1,0 +1,123 @@
+{
+ "label": "2.1.0, аналитика выключена",
+ "code": "2.1.0",
+ "python": "3.13.18",
+ "sqlite": "3.53.1",
+ "duration_s": 184.9,
+ "tokens": 801,
+ "events_initial": 20001,
+ "fault_rate": 0.0,
+ "metrics": {
+  "http_requests": 4249,
+  "user_ok:hide": 177,
+  "user_ok:watch_add": 143,
+  "user_ok:read_best": 177,
+  "user_ok:unhide": 177,
+  "user_ok:read_tokens": 348,
+  "user_ok:read_token": 348,
+  "user_ok:read_live": 348,
+  "user_ok:monitoring_toggle": 32
+ },
+ "unhandled_thread_exceptions": [],
+ "unhandled_count": 0,
+ "lanes_alive": {
+  "fast": true,
+  "main": true,
+  "chain": true,
+  "aux": true,
+  "analytics": true
+ },
+ "scheduler_alive": true,
+ "tasks_done": {
+  "fast": 301,
+  "main": 169,
+  "chain": 38,
+  "aux": 317,
+  "analytics": 0
+ },
+ "integrity_check": "ok",
+ "events_expected_in_scanned_range": 20003,
+ "events_lost": 0,
+ "events_duplicated": 0,
+ "events_without_ts": 0,
+ "inflight_at_stop": {
+  "fast": "quotes",
+  "main": "fund",
+  "chain": "onchain"
+ },
+ "unfinished_after_wait": {},
+ "scanned_to_block": 106001725,
+ "jobs_by_status": {
+  "done": 524,
+  "queued": 222
+ },
+ "error_log_rows": 0,
+ "error_log_locked": 0,
+ "latency_ms": {
+  "probe_write_wait": {
+   "n": 177,
+   "p50": 5.9,
+   "p95": 44.8,
+   "max": 544.2
+  },
+  "hide": {
+   "n": 177,
+   "p50": 8.6,
+   "p95": 74.6,
+   "max": 124.6
+  },
+  "watch_add": {
+   "n": 143,
+   "p50": 8.3,
+   "p95": 77.1,
+   "max": 250.1
+  },
+  "read_best": {
+   "n": 177,
+   "p50": 26.6,
+   "p95": 134.6,
+   "max": 274.3
+  },
+  "unhide": {
+   "n": 177,
+   "p50": 6.9,
+   "p95": 40.6,
+   "max": 126.8
+  },
+  "read_tokens": {
+   "n": 348,
+   "p50": 119.0,
+   "p95": 483.7,
+   "max": 1711.1
+  },
+  "read_token": {
+   "n": 348,
+   "p50": 42.4,
+   "p95": 355.0,
+   "max": 1866.7
+  },
+  "read_live": {
+   "n": 348,
+   "p50": 14.4,
+   "p95": 38.8,
+   "max": 209.4
+  },
+  "monitoring_toggle": {
+   "n": 32,
+   "p50": 8.3,
+   "p95": 101.3,
+   "max": 133.3
+  }
+ },
+ "tx_stats": {
+  "count": 32262,
+  "max_ms": 367.8,
+  "max_where": "onchain.py:140 fetch",
+  "slow": 0,
+  "rollbacks": 0,
+  "lock_timeouts": 0,
+  "busy": 0
+ },
+ "analytics": null,
+ "task_errors": {}
+}

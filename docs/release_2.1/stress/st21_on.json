@@ -1,0 +1,159 @@
+{
+ "label": "2.1.0, аналитика: наихудший случай (непрерывный пересчёт)",
+ "code": "2.1.0",
+ "python": "3.13.18",
+ "sqlite": "3.53.1",
+ "duration_s": 188.5,
+ "tokens": 801,
+ "events_initial": 20001,
+ "fault_rate": 0.0,
+ "metrics": {
+  "http_requests": 3908,
+  "user_ok:monitoring_toggle": 39,
+  "user_ok:watch_add": 154,
+  "user_ok:read_tokens": 331,
+  "user_ok:read_token": 331,
+  "user_ok:read_live": 331,
+  "user_ok:hide": 161,
+  "user_ok:read_best": 161,
+  "user_ok:unhide": 161
+ },
+ "unhandled_thread_exceptions": [],
+ "unhandled_count": 0,
+ "lanes_alive": {
+  "fast": true,
+  "main": true,
+  "chain": true,
+  "aux": true,
+  "analytics": true
+ },
+ "scheduler_alive": true,
+ "tasks_done": {
+  "fast": 296,
+  "main": 149,
+  "chain": 41,
+  "aux": 314,
+  "analytics": 28
+ },
+ "integrity_check": "ok",
+ "events_expected_in_scanned_range": 20003,
+ "events_lost": 0,
+ "events_duplicated": 0,
+ "events_without_ts": 0,
+ "inflight_at_stop": {
+  "fast": "quotes",
+  "main": "deep",
+  "chain": "onchain",
+  "analytics": "analytics"
+ },
+ "unfinished_after_wait": {},
+ "scanned_to_block": 106001636,
+ "jobs_by_status": {
+  "done": 532,
+  "queued": 229
+ },
+ "error_log_rows": 0,
+ "error_log_locked": 0,
+ "latency_ms": {
+  "probe_write_wait": {
+   "n": 175,
+   "p50": 7.0,
+   "p95": 143.1,
+   "max": 636.2
+  },
+  "monitoring_toggle": {
+   "n": 39,
+   "p50": 8.9,
+   "p95": 78.3,
+   "max": 91.9
+  },
+  "watch_add": {
+   "n": 154,
+   "p50": 11.6,
+   "p95": 113.2,
+   "max": 295.6
+  },
+  "read_tokens": {
+   "n": 331,
+   "p50": 122.6,
+   "p95": 846.4,
+   "max": 1682.6
+  },
+  "read_token": {
+   "n": 331,
+   "p50": 48.2,
+   "p95": 626.0,
+   "max": 1303.8
+  },
+  "read_live": {
+   "n": 331,
+   "p50": 15.0,
+   "p95": 40.5,
+   "max": 165.3
+  },
+  "hide": {
+   "n": 161,
+   "p50": 9.5,
+   "p95": 94.5,
+   "max": 232.4
+  },
+  "read_best": {
+   "n": 161,
+   "p50": 29.8,
+   "p95": 151.5,
+   "max": 335.0
+  },
+  "unhide": {
+   "n": 161,
+   "p50": 7.5,
+   "p95": 70.4,
+   "max": 225.7
+  }
+ },
+ "tx_stats": {
+  "count": 30975,
+  "max_ms": 423.1,
+  "max_where": "onchain.py:140 fetch",
+  "slow": 0,
+  "rollbacks": 0,
+  "lock_timeouts": 0,
+  "busy": 0
+ },
+ "analytics": {
+  "runs": [
+   [
+    "emission",
+    12,
+    37,
+    36,
+    0
+   ],
+   [
+    "momentum",
+    16,
+    731,
+    712,
+    0
+   ]
+  ],
+  "state": [
+   [
+    "emission",
+    "ok",
+    11
+   ],
+   [
+    "momentum",
+    "ok",
+    111
+   ]
+  ],
+  "results": 748,
+  "deferred": {
+   "count": 7,
+   "last_at": "2026-11-05T09:11:52Z",
+   "reason": "основные очереди загружены (246 задач) — аналитика отложена"
+  }
+ },
+ "task_errors": {}
+}
