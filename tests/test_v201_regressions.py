@@ -382,3 +382,22 @@ def test_p04_existing_small_db_reports_richer_installation(tmp_path, monkeypatch
     finally:
         startup._started["done"] = False
     assert any(Path(c_["path"]) == old for c_ in st["richer_elsewhere"])
+
+
+def test_p01_interrupted_onchain_job_timestamps_are_filled_on_next_pass():
+    """Задача прервана между вставкой событий и проставлением времени: следующий проход дозаполняет время (без потерь)."""
+    from app import onchain
+    uid = tok()
+    rows = [(uid, "mint", "0x%064x" % b, 0, b, None, "0x" + "ab" * 20, str(10 ** 18), 1.0) for b in range(1000, 300_000, 100)]
+    db.exmany("INSERT INTO supply_events(token_uid,kind,tx_hash,log_index,block,ts,counterparty,amount_raw,amount) "
+              "VALUES(?,?,?,?,?,?,?,?,?)", rows)
+
+    class R:
+        def block_timestamp(self, b):
+            return 1_700_000_000 + b * 2
+
+    onchain._timestamps(R(), uid, 300_000, 1_700_600_000)
+    left = db.q1("SELECT COUNT(*) n FROM supply_events WHERE token_uid=? AND ts IS NULL", (uid,))["n"]
+    exact = db.q1("SELECT COUNT(*) n FROM supply_events WHERE token_uid=? AND ts_source='block'", (uid,))["n"]
+    assert left == 0 and exact >= 2
+    assert db.q1("SELECT COUNT(*) n FROM supply_events WHERE token_uid=?", (uid,))["n"] == len(rows)

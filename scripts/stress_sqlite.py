@@ -364,7 +364,14 @@ def main():
     lanes_alive = {n: l.thread.is_alive() for n, l in r.lanes.items()}
     sched_alive = r.sched.is_alive()
     r.stop()
-    time.sleep(1.5)
+    # корректная остановка: дождаться завершения задач, выполнявшихся в момент остановки (как при закрытии программы),
+    # иначе замер попадает между вставкой событий и проставлением их времени внутри одной задачи
+    inflight = {n: (l.current or {}).get("job") for n, l in r.lanes.items() if l.current}
+    t_wait = time.time()
+    while time.time() - t_wait < 90 and any(l.current and l.thread.is_alive() for l in r.lanes.values()):
+        time.sleep(0.5)
+    still = {n: (l.current or {}).get("job") for n, l in r.lanes.items() if l.current}
+    time.sleep(1.0)
     dur = time.time() - t0
     c = _orig_connect(str(db.DB_PATH), timeout=30)
     integ = c.execute("PRAGMA integrity_check").fetchone()[0]
@@ -388,7 +395,7 @@ def main():
            "metrics": dict(M), "unhandled_thread_exceptions": UNHANDLED[:20], "unhandled_count": len(UNHANDLED),
            "lanes_alive": lanes_alive, "scheduler_alive": sched_alive, "tasks_done": done, "integrity_check": integ,
            "events_expected_in_scanned_range": len(expected), "events_lost": lost, "events_duplicated": dup,
-           "events_without_ts": null_ts, "scanned_to_block": to_block, "jobs_by_status": jobs_err, "error_log_rows": errlog,
+           "events_without_ts": null_ts, "inflight_at_stop": inflight, "unfinished_after_wait": still, "scanned_to_block": to_block, "jobs_by_status": jobs_err, "error_log_rows": errlog,
            "error_log_locked": locked_in_log, "latency_ms": lat,
            "tx_stats": dict(getattr(db, "tx_stats", {}) or {}) or "нет (версия без транзакционного слоя)",
            "task_errors": dict(Counter((j or "?") for (j,) in c.execute("SELECT job FROM jobs WHERE status='error'").fetchall()))}
