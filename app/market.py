@@ -31,6 +31,7 @@ def pool_view_from_gt(p: dict, token_addr: str, trusted_quotes: set[str]) -> dic
         "volume_h24": p.get("volume_h24"), "created_at": p.get("pool_created_at"),
         "counter_symbol": counter.get("symbol"), "counter_address": caddr_n,
         "counter_trusted": caddr_n in trusted_quotes or bool(counter.get("coingecko_id")),
+        "trades_h24": _trades(p.get("tx_h24")),
         "source": "geckoterminal",
     }
 
@@ -55,8 +56,32 @@ def pool_view_from_ds(p: dict, token_addr: str, trusted_quotes: set[str]) -> dic
         "volume_h24": p.get("volume_h24"), "created_at": p.get("pair_created_at"),
         "counter_symbol": counter.get("symbol"), "counter_address": caddr_n,
         "counter_trusted": caddr_n in trusted_quotes, "source": "dexscreener",
+        "trades_h24": _trades(p.get("txns_h24")),
         "ds_fdv": p.get("fdv"), "ds_market_cap": p.get("market_cap"),
     }
+
+
+def _trades(tx) -> int | None:
+    if not isinstance(tx, dict):
+        return None
+    try:
+        return int(tx.get("buys") or 0) + int(tx.get("sells") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def weighted_median(pairs: list[tuple[float, float]]) -> float | None:
+    """Медиана цены, взвешенная по ликвидности: почти пустой пул не может сдвинуть результат."""
+    v = sorted((p, w) for p, w in pairs if p is not None and w and w > 0)
+    if not v:
+        return None
+    total = sum(w for _, w in v)
+    acc = 0.0
+    for p, w in v:
+        acc += w
+        if acc >= total / 2:
+            return p
+    return v[-1][0]
 
 
 def base_sym(p: dict) -> str:
@@ -81,6 +106,8 @@ def assess_pools(pools: list[dict], min_liq: float, outlier_pct: float) -> tuple
             reasons.append(f"ликвидность {liq if liq is not None else 'н/д'} < {min_liq:.0f} USD")
         if not p.get("counter_trusted"):
             reasons.append(f"контр-актив {p.get('counter_symbol')} не в списке доверенных")
+        if p.get("trades_h24") == 0:
+            reasons.append("нет сделок за 24 ч — котировка может быть устаревшей")
         p["excluded_reasons"] = reasons
     candidates = [p for p in pools if not p["excluded_reasons"]]
     med = median([p["price_usd"] for p in candidates])
@@ -92,7 +119,45 @@ def assess_pools(pools: list[dict], min_liq: float, outlier_pct: float) -> tuple
     for p in pools:
         p["quality"] = not p["excluded_reasons"]
     good = [p for p in pools if p["quality"]]
-    return pools, median([p["price_usd"] for p in good])
+    return pools, weighted_median([(p["price_usd"], p.get("liquidity_usd") or 0) for p in good])
+
+
+def price_check(good_pools: list[dict], robust: float | None, refs: dict[str, float | None],
+                prev: dict | None = None, conflict_pct: float = 10.0) -> dict:
+    """Проверка цены: качественные пулы, сравнение с провайдерами, подозрительный скачок.
+    refs: {'geckoterminal': .., 'dexscreener': .., 'defillama': ..}. prev: {'value','at_ts','now_ts'}"""
+    out = {"value": robust, "method": f"медиана, взвешенная по ликвидности, по {len(good_pools)} качественным пулам",
+           "pools": len(good_pools), "liquidity_usd": sum(p.get("liquidity_usd") or 0 for p in good_pools),
+           "refs": {k: v for k, v in refs.items() if v}, "flags": []}
+    if robust is None:
+        alt = [v for v in refs.values() if v]
+        if not alt:
+            out.update({"confidence": "none", "flags": ["цена не установлена"]})
+            return out
+        out.update({"value": median(alt), "method": "медиана цен провайдеров (качественных пулов нет)", "confidence": "low",
+                    "flags": ["нет качественных пулов — цена только по провайдерам"]})
+        robust = out["value"]
+    vals = [robust] + [v for v in refs.values() if v]
+    lo, hi = min(vals), max(vals)
+    spread = (hi / lo - 1) * 100 if lo > 0 else None
+    out.update({"low": lo, "high": hi, "spread_pct": spread})
+    conf = "high" if len(good_pools) >= 2 else "medium" if good_pools else out.get("confidence", "low")
+    if spread is not None and spread > conflict_pct:
+        out["conflict"] = True
+        out["flags"].append(f"цены источников расходятся на {spread:.0f}% (> {conflict_pct:.0f}%)")
+        conf = "low"
+    if out["liquidity_usd"] and out["liquidity_usd"] < 20_000 and conf == "high":
+        conf = "medium"
+        out["flags"].append("суммарная ликвидность качественных пулов < $20 тыс.")
+    if prev and prev.get("value") and robust and prev.get("now_ts") and prev.get("at_ts"):
+        dt_h = (prev["now_ts"] - prev["at_ts"]) / 3600
+        ch = (robust / prev["value"] - 1) * 100
+        if dt_h <= 2 and abs(ch) >= 50:
+            out["spike"] = {"change_pct": ch, "hours": round(dt_h, 2), "prev": prev["value"]}
+            out["flags"].append(f"подозрительный скачок цены {ch:+.0f}% за {dt_h:.1f} ч")
+            conf = "low"
+    out["confidence"] = conf
+    return out
 
 
 def dedupe_pools(pools: list[dict]) -> list[dict]:

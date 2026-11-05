@@ -1,50 +1,160 @@
 {
   "_about": "Исследовательские записи с указанием источника, внесённые вручную 2026-11-04. Это НЕ сгенерированные данные: каждое значение сопровождается ссылкой и типом источника. Их можно отключить/исправить в карточке проекта. Регрессионные примеры — не эталон правильного результата.",
-  "seed_version": 1,
+  "seed_version": 2,
   "tokens": [
     {
       "chain": "robinhood",
       "address": "0xb63d07CEf74bE747231d601bb2FAa6B252c68106",
       "note": "FABLES — регрессионный пример №1",
       "facts": [
-        {"fact_key": "official_link", "value": "https://www.fables.fi/docs/token", "source_type": "official_docs",
-         "evidence_url": "https://www.fables.fi/docs/token", "note": "Официальная документация указывает контракт 0xb63d07CEf74bE747231d601bb2FAa6B252c68106, Robinhood Chain (4663), decimals 18"},
-        {"fact_key": "tge_date", "value": "2026-10-20T22:00:00Z", "source_type": "official_docs",
-         "evidence_url": "https://www.fables.fi/docs/token", "note": "Документация: launch date 20 October 2026. Время 22:00 UTC — из объявления @fablesfi (зеркало teapawt.net), с оговоркой «subject to final readiness checks»"},
-        {"fact_key": "supply_endpoint_circulating", "value": "https://fables.fi/api/supply/circulating", "source_type": "official_docs",
-         "evidence_url": "https://www.fables.fi/docs/token", "note": "Методика проекта: circulating = totalSupply − FABLES в escrow veFABLES − FABLES в Seeder Safe"},
-        {"fact_key": "funding", "category": "checked_no_mention", "value": "не установлено", "source_type": "official_docs",
-         "evidence_url": "https://www.fables.fi/docs/token", "note": "На странице токена инвесторы/VC не упоминаются. Это НЕ доказательство отсутствия VC — категория не засчитывается как PASS."}
+        {
+          "fact_key": "official_link",
+          "value": "https://www.fables.fi/docs/token",
+          "source_type": "official_docs",
+          "evidence_url": "https://www.fables.fi/docs/token",
+          "note": "Официальная документация указывает контракт 0xb63d07CEf74bE747231d601bb2FAa6B252c68106, Robinhood Chain (4663), decimals 18"
+        },
+        {
+          "fact_key": "tge_date",
+          "value": "2026-10-20T22:00:00Z",
+          "source_type": "official_docs",
+          "evidence_url": "https://www.fables.fi/docs/token",
+          "note": "Документация: launch date 20 October 2026. Время 22:00 UTC — из объявления @fablesfi (зеркало teapawt.net), с оговоркой «subject to final readiness checks»"
+        },
+        {
+          "fact_key": "supply_endpoint_circulating",
+          "value": "https://fables.fi/api/supply/circulating",
+          "source_type": "official_docs",
+          "evidence_url": "https://www.fables.fi/docs/token",
+          "note": "Методика проекта: circulating = totalSupply − FABLES в escrow veFABLES − FABLES в Seeder Safe"
+        },
+        {
+          "fact_key": "funding",
+          "category": "checked_no_mention",
+          "value": "не установлено",
+          "source_type": "official_docs",
+          "evidence_url": "https://www.fables.fi/docs/token",
+          "note": "На странице токена инвесторы/VC не упоминаются. Это НЕ доказательство отсутствия VC — категория не засчитывается как PASS."
+        }
       ],
       "labels": [
-        {"address": "0xc1d5aDc963a57d24ADaf63aaE1bFbeCaB95f6EDD", "label": "veFABLES escrow", "kind": "escrow", "source_type": "official_docs", "source_url": "https://www.fables.fi/docs/token"},
-        {"address": "0x385Bc909CA7EFd34788216Ea97346D3bA75C94de", "label": "Seeder Safe (2/3) — ликвидность запуска 15M", "kind": "treasury", "source_type": "official_docs", "source_url": "https://www.fables.fi/docs/token"},
-        {"address": "0x215F159881964f1E924DBfE40E9e64181b0D4b73", "label": "Team Safe (2/3) — лок команды 40M", "kind": "team", "source_type": "official_docs", "source_url": "https://www.fables.fi/docs/token"},
-        {"address": "0x3c1672c615ef1f966a1cbcc37f924586a5a3d422", "label": "minter() токена (наблюдение ончейн)", "kind": "minter", "source_type": "onchain", "source_url": "eth_call minter() 2026-11-04"}
+        {
+          "address": "0xc1d5aDc963a57d24ADaf63aaE1bFbeCaB95f6EDD",
+          "label": "veFABLES escrow",
+          "kind": "escrow",
+          "source_type": "official_docs",
+          "source_url": "https://www.fables.fi/docs/token",
+          "circulation": "excluded",
+          "circulation_evidence": "fables.fi/docs/token: circulating = totalSupply − FABLES в escrow veFABLES − FABLES в Seeder Safe"
+        },
+        {
+          "address": "0x385Bc909CA7EFd34788216Ea97346D3bA75C94de",
+          "label": "Seeder Safe (2/3) — ликвидность запуска 15M",
+          "kind": "treasury",
+          "source_type": "official_docs",
+          "source_url": "https://www.fables.fi/docs/token",
+          "circulation": "excluded",
+          "circulation_evidence": "fables.fi/docs/token: Seeder Safe исключается из circulating по методике проекта"
+        },
+        {
+          "address": "0x215F159881964f1E924DBfE40E9e64181b0D4b73",
+          "label": "Team Safe (2/3) — лок команды 40M",
+          "kind": "team",
+          "source_type": "official_docs",
+          "source_url": "https://www.fables.fi/docs/token",
+          "circulation": "uncertain"
+        },
+        {
+          "address": "0x3c1672c615ef1f966a1cbcc37f924586a5a3d422",
+          "label": "minter() токена (наблюдение ончейн)",
+          "kind": "minter",
+          "source_type": "onchain",
+          "source_url": "eth_call minter() 2026-11-04",
+          "circulation": "uncertain"
+        }
       ],
       "tokenomics": [
-        {"version_label": "v1 (12.10.2026)", "published_at": "2026-10-12", "is_current": false, "source_type": "third_party_mirror",
-         "source_url": "https://teapawt.net/fablesfi/article/2112548216910585891",
-         "note": "Параметры v1 известны только из раздела «изменения» статьи на стороннем зеркале (не fables.fi). Первоисточник (статья 12.10) не проверен.",
-         "params": {"max_supply": 1000000000, "emissions_allocation": 500000000, "initial_weekly_rate": "1% от остатка эмиссий",
-                    "max_weekly_rate": "2% от остатка", "cumulative_ceilings_m": {"y1": 210, "y2": 330, "y3": 400, "y4": 440},
-                    "day_one_reserve": "потолок 75M", "per_pool_cap": "≈2× комиссий и стимулов"}},
-        {"version_label": "v2 (20.10.2026, запуск)", "published_at": "2026-10-20", "is_current": true, "source_type": "official_docs",
-         "source_url": "https://www.fables.fi/docs/token",
-         "note": "Подтверждено официальной документацией fables.fi/docs/token (2%/5%, потолки 275/350/410/460M, 40M лок команды, 15M Seeder). Недельные бюджеты 1–4 и даты — из объявления 20.10 на стороннем зеркале; даты начала недель ВЫВЕДЕНЫ из времени запуска (+7 дн.) — предположение, эпохи контракта не проверены. Бюджет — это потолок, а не выпущенное количество.",
-         "params": {"max_supply": 1000000000, "emissions_allocation": 500000000, "initial_weekly_rate": "2% от остатка эмиссий",
-                    "max_weekly_rate": "5% от остатка", "cumulative_ceilings_m": {"y1": 275, "y2": 350, "y3": 410, "y4": 460},
-                    "team": "40M постоянный auto-max лок (сминчен на запуске) + 40M вестинг с 6 по 24 мес. (минтится по мере вестинга)",
-                    "seeder_liquidity": 15000000, "prologue_reserve": 25000000,
-                    "points_allocation": "≈67.06M: 24.69M ликвидно, 20.90M в 6-мес. локах, 21.48M auto-max",
-                    "claim_fee": "10% (потолок контракта 20%)", "operating_contribution": "1% LP-эмиссий",
-                    "weekly_budgets": [
-                      {"week": 1, "start": "2026-10-20T22:00:00Z", "amount": 10000000},
-                      {"week": 2, "start": "2026-10-27T22:00:00Z", "amount": 9800000},
-                      {"week": 3, "start": "2026-11-03T22:00:00Z", "amount": 9604000},
-                      {"week": 4, "start": "2026-11-10T22:00:00Z", "amount": 9411920}],
-                    "emission_recipient_kinds": ["gauge", "emissions"],
-                    "unlocks": [{"date": "2027-04-20T00:00:00Z", "amount": "начало вестинга 40M команды", "note": "оценка: клифф 6 мес. от запуска; точная дата не опубликована"}]}}
+        {
+          "version_label": "v1 (12.10.2026)",
+          "published_at": "2026-10-12",
+          "is_current": false,
+          "source_type": "third_party_mirror",
+          "source_url": "https://teapawt.net/fablesfi/article/2112548216910585891",
+          "note": "Параметры v1 известны только из раздела «изменения» статьи на стороннем зеркале (не fables.fi). Первоисточник (статья 12.10) не проверен.",
+          "params": {
+            "max_supply": 1000000000,
+            "emissions_allocation": 500000000,
+            "initial_weekly_rate": "1% от остатка эмиссий",
+            "max_weekly_rate": "2% от остатка",
+            "cumulative_ceilings_m": {
+              "y1": 210,
+              "y2": 330,
+              "y3": 400,
+              "y4": 440
+            },
+            "day_one_reserve": "потолок 75M",
+            "per_pool_cap": "≈2× комиссий и стимулов"
+          }
+        },
+        {
+          "version_label": "v2 (20.10.2026, запуск)",
+          "published_at": "2026-10-20",
+          "is_current": true,
+          "source_type": "official_docs",
+          "source_url": "https://www.fables.fi/docs/token",
+          "note": "Подтверждено официальной документацией fables.fi/docs/token (2%/5%, потолки 275/350/410/460M, 40M лок команды, 15M Seeder). Недельные бюджеты 1–4 и даты — из объявления 20.10 на стороннем зеркале; даты начала недель ВЫВЕДЕНЫ из времени запуска (+7 дн.) — предположение, эпохи контракта не проверены. Бюджет — это потолок, а не выпущенное количество.",
+          "params": {
+            "max_supply": 1000000000,
+            "emissions_allocation": 500000000,
+            "initial_weekly_rate": "2% от остатка эмиссий",
+            "max_weekly_rate": "5% от остатка",
+            "cumulative_ceilings_m": {
+              "y1": 275,
+              "y2": 350,
+              "y3": 410,
+              "y4": 460
+            },
+            "team": "40M постоянный auto-max лок (сминчен на запуске) + 40M вестинг с 6 по 24 мес. (минтится по мере вестинга)",
+            "seeder_liquidity": 15000000,
+            "prologue_reserve": 25000000,
+            "points_allocation": "≈67.06M: 24.69M ликвидно, 20.90M в 6-мес. локах, 21.48M auto-max",
+            "claim_fee": "10% (потолок контракта 20%)",
+            "operating_contribution": "1% LP-эмиссий",
+            "weekly_budgets": [
+              {
+                "week": 1,
+                "start": "2026-10-20T22:00:00Z",
+                "amount": 10000000
+              },
+              {
+                "week": 2,
+                "start": "2026-10-27T22:00:00Z",
+                "amount": 9800000
+              },
+              {
+                "week": 3,
+                "start": "2026-11-03T22:00:00Z",
+                "amount": 9604000
+              },
+              {
+                "week": 4,
+                "start": "2026-11-10T22:00:00Z",
+                "amount": 9411920
+              }
+            ],
+            "emission_recipient_kinds": [
+              "gauge",
+              "emissions"
+            ],
+            "unlocks": [
+              {
+                "date": "2027-04-20T00:00:00Z",
+                "amount": "начало вестинга 40M команды",
+                "note": "оценка: клифф 6 мес. от запуска; точная дата не опубликована"
+              }
+            ]
+          }
+        }
       ]
     },
     {
@@ -52,8 +162,13 @@
       "address": "0x451b42a15100c340ca12f7c66de06fac5ea2d751",
       "note": "BOW (Longbow) — регрессионный пример №2. Связь адреса с протоколом: DefiLlama /protocols (slug longbow, address robinhood:0x451b…), профиль DEX Screener (longbow.finance, x.com/longbowlend), CoinGecko id longbow-2.",
       "facts": [
-        {"fact_key": "official_link", "value": "https://www.longbow.finance/", "source_type": "third_party",
-         "evidence_url": "https://defillama.com/protocol/longbow", "note": "Адрес указан в листинге DefiLlama; официальная документация с адресом токена не найдена (сайт — SPA). Требует проверки в официальных каналах."}
+        {
+          "fact_key": "official_link",
+          "value": "https://www.longbow.finance/",
+          "source_type": "third_party",
+          "evidence_url": "https://defillama.com/protocol/longbow",
+          "note": "Адрес указан в листинге DefiLlama; официальная документация с адресом токена не найдена (сайт — SPA). Требует проверки в официальных каналах."
+        }
       ],
       "labels": [],
       "tokenomics": []
@@ -62,13 +177,17 @@
       "chain": "robinhood",
       "address": "0xad9e5fb798d12663911388a8d25eba21d6141401",
       "note": "Другой токен с названием «LONGBOW (BOW)» (найден в выдаче DexPaprika). Контроль: не должен связываться с протоколом Longbow и не должен получать цену/ATH 0x451b…",
-      "facts": [], "labels": [], "tokenomics": []
+      "facts": [],
+      "labels": [],
+      "tokenomics": []
     },
     {
       "chain": "robinhood",
       "address": "0x485743a9bc4aa28dbbeaf35b456cd46fe2622874",
       "note": "Ещё один контракт из выдачи по запросу «Longbow (BOW)» на DexPaprika. Контроль путаницы тикеров.",
-      "facts": [], "labels": [], "tokenomics": []
+      "facts": [],
+      "labels": [],
+      "tokenomics": []
     }
   ]
 }

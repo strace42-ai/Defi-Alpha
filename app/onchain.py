@@ -93,6 +93,12 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
         db.set_progress(pkey_to, str(start))
     step = chain.max_log_range
     errors = []
+    # инкрементально: только новые блоки + перекрытие для контроля реорганизаций/пропусков
+    from . import config as _cfg
+    overlap = int(_cfg.load_settings().get("reorg_overlap_blocks", 2000))
+    prev_to = scanned_to
+    rescan_from = max(scanned_from, scanned_to - overlap) if scanned_to > scanned_from else scanned_to
+    seen_overlap: set[tuple[str, int]] = set()
 
     def fetch(a: int, b: int, force: bool = False) -> int:
         nonlocal calls, step
@@ -124,6 +130,8 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
                     if len(data) != 66:
                         continue  # нестандартный Transfer — не интерпретируем
                     amount = int(data, 16)  # целые минимальные единицы
+                    if int(lg["blockNumber"], 16) < prev_to:
+                        seen_overlap.add((lg["transactionHash"], int(lg["logIndex"], 16)))
                     db.get_conn().execute(
                         "INSERT OR IGNORE INTO supply_events(token_uid,kind,tx_hash,log_index,block,counterparty,amount_raw,amount) "
                         "VALUES(?,?,?,?,?,?,?,?)",
@@ -134,9 +142,24 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
             a = e + 1
         return a
 
-    # вперёд до головы
-    nxt = fetch(scanned_to, head)
-    db.set_progress(pkey_to, str(nxt))
+    # вперёд до головы (с перекрытием)
+    nxt = fetch(rescan_from, head)
+    if nxt >= prev_to and prev_to > rescan_from:
+        # события в перекрытии, которых больше нет в каноничной цепи, помечаются orphaned (не удаляются)
+        c = db.get_conn()
+        rows_ov = c.execute("SELECT tx_hash, log_index FROM supply_events WHERE token_uid=? AND block>=? AND block<? AND orphaned=0",
+                            (uid, rescan_from, prev_to)).fetchall()
+        orphans = [(t, li) for t, li in rows_ov if (t, li) not in seen_overlap]
+        for t, li in orphans:
+            c.execute("UPDATE supply_events SET orphaned=1 WHERE token_uid=? AND tx_hash=? AND log_index=?", (uid, t, li))
+        for t, li in c.execute("SELECT tx_hash, log_index FROM supply_events WHERE token_uid=? AND orphaned=1 AND block>=? AND block<?",
+                               (uid, rescan_from, prev_to)).fetchall():
+            if (t, li) in seen_overlap:  # событие снова в каноничной цепи
+                c.execute("UPDATE supply_events SET orphaned=0 WHERE token_uid=? AND tx_hash=? AND log_index=?", (uid, t, li))
+        c.commit()
+        if orphans:
+            errors.append(f"реорганизация: {len(orphans)} событий в перекрытии больше не подтверждаются — помечены orphaned")
+    db.set_progress(pkey_to, str(max(nxt, prev_to)))
     if progress:
         progress(f"ончейн {tok['symbol']}: блоки до {nxt} из {head}")
     # totalSupply() читается НА ТОМ ЖЕ БЛОКЕ, до которого получены логи — без гонки с новыми блоками
@@ -225,7 +248,7 @@ def to_decimal(raw: int | None, decimals: int | None) -> Decimal | None:
 def raw_totals(uid: str) -> dict:
     """Суммы в целых минимальных единицах (без float)."""
     minted = burned = n = 0
-    for r in db.q("SELECT kind, amount_raw FROM supply_events WHERE token_uid=?", (uid,)):
+    for r in db.q("SELECT kind, amount_raw FROM supply_events WHERE token_uid=? AND COALESCE(orphaned,0)=0", (uid,)):
         v = int(r["amount_raw"])
         n += 1
         if r["kind"] == "mint":
@@ -336,7 +359,7 @@ def supply_analytics(uid: str) -> dict:
     decimals = tok["decimals"] if tok["decimals"] is not None else 18
     labels = _labels(tok["chain"])
     rows = db.rows_to_dicts(db.q("SELECT kind, ts, ts_source, counterparty, amount_raw, tx_hash, block FROM supply_events "
-                                 "WHERE token_uid=? ORDER BY block, log_index", (uid,)))
+                                 "WHERE token_uid=? AND COALESCE(orphaned,0)=0 ORDER BY block, log_index", (uid,)))
     daily: dict[str, dict] = defaultdict(lambda: {"mint": 0, "burn": 0})
     recips: dict[str, int] = defaultdict(int)
     for r in rows:
@@ -515,7 +538,19 @@ def onchain_update(uid: str, progress: Progress | None = None, max_calls: int = 
                            confidence="confirmed", method="getTokenSupply")
         except SourceError as e:
             oc["error"] = str(e)
-    oc["security"] = security_check(uid)
+    if chain.kind == "evm":
+        try:
+            from .refresh import refresh_circulation
+            f2 = get_facts(uid)
+            f2["onchain"] = oc
+            save_facts(uid, f2, "updated_at")
+            refresh_circulation(uid)
+            oc = get_facts(uid).get("onchain") or oc
+        except SourceError as e:
+            oc["circulation_error"] = str(e)
+    if not oc.get("security") or (now_utc() - (parse_iso((oc.get("security") or {}).get("at")) or now_utc())).total_seconds() > 86400 \
+            or not (oc.get("security") or {}).get("at"):
+        oc["security"] = security_check(uid)  # байткод меняется редко: не чаще раза в сутки
     f["onchain"] = oc
     compute_caps(uid, f)
     save_facts(uid, f, "last_onchain_at")

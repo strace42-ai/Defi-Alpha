@@ -77,6 +77,16 @@ def evaluate(uid: str, old_facts: dict | None = None) -> dict:
         compute_caps(uid, facts)
     man = manual_facts(uid)
     now = now_utc()
+    # MCAP Intelligence Engine: оценка капитализации по всем доступным уровням данных (без сетевых запросов)
+    from . import mcap as M
+    from .enrich import current_tokenomics
+    tn = current_tokenomics(uid)
+    facts["tokenomics_unlocks"] = ((tn or {}).get("params") or {}).get("unlocks") or []
+    old_m = facts.get("mcap") if isinstance(facts.get("mcap"), dict) else None
+    facts["mcap"] = M.assess(facts, man)
+    _record_mcap(uid, old_m, facts["mcap"], float(s["filters"]["max_circ_mcap_usd"]))
+    # финансирование — аналитика рисков, не фильтр
+    facts["funding"] = filters.funding_analysis(facts, man, facts["mcap"].get("value") or facts["mcap"].get("high"))
     if tok["asset_class"] in ("quote",):
         res = {"level": "A", "status": "FAIL", "reason": "стандартный quote-/обёрнутый нативный актив — не новый проект", "filters": {}}
         _apply(uid, tok, res, facts, {}, None)
@@ -107,6 +117,7 @@ def evaluate(uid: str, old_facts: dict | None = None) -> dict:
             if facts.get("protocol") and tok["last_onchain_at"]:
                 level = "D"
     sc = scoring.score(facts, fr, man)
+    sc["risk_flags"] = (facts.get("funding") or {}).get("risks") or []
     if level == "D" and not any(v == "FAIL" for v in st.values()) and (sc["preliminary"] or 0) >= s["scoring"]["watchlist_min_preliminary"]:
         level = "E"
     # итоговый статус
@@ -125,7 +136,7 @@ def evaluate(uid: str, old_facts: dict | None = None) -> dict:
         status, reason = "DATA ERROR", "Ошибки получения данных: " + "; ".join(facts["errors"][:2])
     elif all(v == "PASS" for v in st.values()):
         status = "PASS"
-        reason = "Все 6 фильтров пройдены" + (f" (предварительно: {', '.join(prelim)})" if prelim else "")
+        reason = f"Все {len(st)} обязательных фильтров пройдены" + (f" (предварительно: {', '.join(prelim)})" if prelim else "")
     elif unknown and level in ("B", "C", "D", "E"):
         status, reason = "MANUAL REVIEW", "Требуют ручной проверки: " + ", ".join(unknown)
     else:
@@ -136,21 +147,62 @@ def evaluate(uid: str, old_facts: dict | None = None) -> dict:
     return res
 
 
+def _record_mcap(uid: str, old: dict | None, new: dict, limit: float) -> None:
+    """История оценок MCAP: запись только при изменении типа, значения (>1%) или решения относительно лимита."""
+    from . import mcap as M
+    dec = M.filter_decision(new, limit)[0]
+    if old and "points" in old:
+        same_type = old.get("type") == new.get("type")
+        ov, nv = old.get("value") or old.get("high"), new.get("value") or new.get("high")
+        same_val = (ov is None and nv is None) or (ov and nv and abs(nv / ov - 1) < 0.01)
+        if same_type and same_val and M.filter_decision(old, limit)[0] == dec:
+            return
+    db.ex("INSERT INTO mcap_assessments(token_uid,assessed_at,mcap_type,value,low,high,price,circ_supply,method,filter_status,details) "
+          "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+          (uid, now_iso(), new["type"], new.get("value"), new.get("low"), new.get("high"), new.get("price"),
+           str(new.get("circulating_supply")) if new.get("circulating_supply") is not None else None, new.get("reason"), dec,
+           dumps({"points": new["points"], "upper": new.get("upper"), "conflicts": new["conflicts"]})))
+
+
+def is_hidden(uid: str) -> bool:
+    r = db.q1("SELECT until FROM hidden_tokens WHERE token_uid=? AND active=1", (uid,))
+    if not r:
+        return False
+    if r["until"] and r["until"] <= now_iso():
+        db.ex("UPDATE hidden_tokens SET active=0 WHERE token_uid=?", (uid,))
+        db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "unhide_expired", r["until"], now_iso()))
+        return False
+    return True
+
+
+def best_candidates(limit: int = 30) -> list[str]:
+    """Автоматический рейтинг лучших DeFi-кандидатов: уровни C–E, без FAIL, без скрытых пользователем."""
+    for r in db.q("SELECT token_uid FROM hidden_tokens WHERE active=1 AND until IS NOT NULL AND until<=?", (now_iso(),)):
+        is_hidden(r["token_uid"])  # истёкшие временные скрытия возвращаются с записью в журнал
+    rows = db.q("SELECT uid FROM tokens WHERE level IN ('C','D','E') AND status!='FAIL' AND asset_class='token' "
+                "AND uid NOT IN (SELECT token_uid FROM hidden_tokens WHERE active=1) "
+                "ORDER BY score_preliminary DESC NULLS LAST LIMIT ?", (limit,))
+    return [r["uid"] for r in rows]
+
+
 def _apply(uid: str, tok: dict, res: dict, facts: dict, old_filters: dict, old_facts: dict | None) -> None:
     sc = res.get("score") or {}
     conf = None
     if res.get("filters"):
         cs = [v.get("confidence") for v in res["filters"].values() if v["status"] == "PASS"]
-        conf = "confirmed" if cs and all(c == "confirmed" for c in cs) and len(cs) == 6 else ("preliminary" if cs else "low")
+        conf = "confirmed" if cs and all(c == "confirmed" for c in cs) and len(cs) == len(res["filters"]) else ("preliminary" if cs else "low")
     db.record_status_change(uid, "level", tok["level"], res["level"], res["reason"])
     db.record_status_change(uid, "status", tok["status"], res["status"], res["reason"])
     facts["evaluation"] = {"level": res["level"], "status": res["status"], "reason": res["reason"],
                            "market_minimum": res.get("market_minimum"), "at": now_iso()}
     facts["score"] = sc
-    db.ex("UPDATE tokens SET level=?, status=?, status_reason=?, score_confirmed=?, score_max_verifiable=?, score_preliminary=?, "
-          "confidence=?, facts=?, updated_at=? WHERE uid=?",
-          (res["level"], res["status"], res["reason"], sc.get("confirmed"), sc.get("max_verifiable"), sc.get("preliminary"),
-           conf, dumps(facts), now_iso(), uid))
+    from .enrich import _facts_lock, merge_facts
+    with _facts_lock:
+        merged = merge_facts(uid, facts)  # только изменённые ключи — без затирания данных других очередей
+        db.ex("UPDATE tokens SET level=?, status=?, status_reason=?, score_confirmed=?, score_max_verifiable=?, score_preliminary=?, "
+              "confidence=?, facts=?, updated_at=? WHERE uid=?",
+              (res["level"], res["status"], res["reason"], sc.get("confirmed"), sc.get("max_verifiable"), sc.get("preliminary"),
+               conf, dumps(merged), now_iso(), uid))
     if res.get("filters") and old_facts is not None:
         new_f = {k: {"status": v["status"], "confidence": v["confidence"], "reason": v["reason"], "values": v.get("values"),
                      "evidence": v.get("evidence")} for k, v in res["filters"].items()}

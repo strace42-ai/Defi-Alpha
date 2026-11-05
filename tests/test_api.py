@@ -46,16 +46,16 @@ def test_cross_origin_write_rejected():
     assert r.status_code == 403
 
 
-def test_no_vc_requires_evidence():
+def test_funding_fact_is_analytics_not_filter():
     uid = _token()
     c = _client()
-    r = c.post(f"/api/token/{uid}/facts", json={"fact_key": "funding", "category": "none_documented", "value": "нет VC"})
-    assert r.status_code == 400
-    r = c.post(f"/api/token/{uid}/facts", json={"fact_key": "funding", "category": "none_documented", "value": "нет VC",
-                                               "evidence_url": "https://docs.example/tokenomics", "source_type": "official_docs"})
+    r = c.post(f"/api/token/{uid}/facts", json={"fact_key": "funding", "category": "vc_fund", "value": "Fund X",
+                                               "amount_usd": 10000000, "evidence_url": "https://example.org/round"})
     assert r.status_code == 200
-    vc = db.q1("SELECT status FROM filter_current WHERE token_uid=? AND filter_key='vc'", (uid,))
-    assert vc["status"] == "PASS"
+    assert db.q1("SELECT 1 FROM filter_current WHERE token_uid=? AND filter_key='vc'", (uid,)) is None
+    d = c.get(f"/api/token/{uid}").json()
+    assert d["facts"]["funding"]["status"] == "vc_present"
+    assert d["token"]["status"] != "FAIL" or "VC" not in (d["token"]["status_reason"] or "")
 
 
 def test_secrets_never_returned():

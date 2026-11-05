@@ -78,3 +78,15 @@ form.inline label { display: flex; flex-direction: column; font-size: 12px; colo
 .loading { color: var(--text-muted); padding: 30px; text-align: center; }
 .addr { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
 details > summary { cursor: pointer; color: var(--text-secondary); }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 50; overflow: auto; padding: 40px 16px; }
+.modal > .card { max-width: 980px; margin: 0 auto; }
+.mcapcell { cursor: pointer; }
+.mcapcell:hover { text-decoration: underline dotted; }
+.fresh { display: inline-flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.fb { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-secondary); }
+.fb.fresh_ { border-color: var(--good); color: var(--good); }
+.fb.updating { border-color: var(--accent); color: var(--accent); }
+.fb.stale { border-color: var(--warn); color: var(--warn); }
+.fb.source_down { border-color: var(--bad); color: var(--bad); }
+.fb.conflict { border-color: var(--warn); color: var(--warn); }
+#liveNote { color: var(--warn); }

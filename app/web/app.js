@@ -66,35 +66,84 @@ function lineChart(canvas, datasets, opts = {}) {
 const fmtUsdPlain = v => { const a = Math.abs(v); return a >= 1e6 ? "$" + (v / 1e6).toFixed(1) + "M" : a >= 1e3 ? "$" + (v / 1e3).toFixed(0) + "K" : a >= 1 ? "$" + v.toFixed(2) : "$" + Number(v).toPrecision(3); };
 const fmtNum = v => { const a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed(1) + "M" : a >= 1e3 ? (v / 1e3).toFixed(0) + "K" : Number(v).toPrecision(3); };
 
-/* ---------- задания ---------- */
-async function pollJobs() {
-  try {
-    const j = await api("/api/jobs");
-    const cur = j.status.current, q = j.status.queued.length;
-    const el = $("#jobStatus");
-    if (cur) { el.classList.add("busy"); el.textContent = `${META.jobs[cur.job] || cur.job}: ${cur.progress || ""}${q ? ` (+${q} в очереди)` : ""}`; }
-    else { el.classList.remove("busy"); const last = j.recent.find(x => x.status !== "queued"); el.textContent = last ? `последнее: ${META.jobs[last.job] || last.job} — ${last.status === "done" ? "готово" : last.status}` : ""; }
-    $("#scanBtn").disabled = !!(cur && cur.job === "scan");
-    if (window._lastBusy && !cur && ["dashboard", "scanner"].includes(route().name)) render();
-    window._lastBusy = !!cur;
-  } catch { }
-  try { const a = await api("/api/alerts?only_open=true&limit=100"); const b = $("#alertBadge"); b.textContent = a.rows.length; b.classList.toggle("hidden", !a.rows.length); } catch { }
+/* ---------- живые обновления ---------- */
+const LANE_NAMES = { fast: "котировки", main: "обнаружение/анализ", chain: "ончейн", aux: "CoinGecko/сервис" };
+let LIVE = { since: "", lastSoft: 0, tokenUpdated: null, tokenEvents: null, busy: false };
+// незаписанный ввод пользователя: форма помечается «грязной» и не перерисовывается автоматически
+document.addEventListener("input", e => { const f = e.target.closest("form"); if (f) f.dataset.dirty = "1"; });
+function userIsEditing() {
+  const a = document.activeElement;
+  if (a && ["INPUT", "TEXTAREA", "SELECT"].includes(a.tagName) && a.closest("#view")) return true;
+  return !!document.querySelector("#view form[data-dirty='1']");
 }
-$("#scanBtn").onclick = async () => { await api("/api/scan", { method: "POST", body: {} }); toast("Сканирование поставлено в очередь. Первые результаты появятся через 1–3 минуты."); pollJobs(); };
+function saveScroll() {
+  return { y: window.scrollY, w: [...document.querySelectorAll("#view .tablewrap, #view [data-scroll]")].map(e => e.scrollTop) };
+}
+function restoreScroll(sc) {
+  window.scrollTo(0, sc.y);
+  [...document.querySelectorAll("#view .tablewrap, #view [data-scroll]")].forEach((e, i) => { if (sc.w[i] != null) e.scrollTop = sc.w[i]; });
+}
+function renderMonitor(j) {
+  const el = $("#jobStatus");
+  const busy = Object.entries(j.lanes || {}).filter(([, l]) => l.current);
+  const q = Object.values(j.lanes || {}).reduce((a, l) => a + l.queued, 0);
+  el.classList.toggle("busy", busy.length > 0);
+  const br = Object.keys(j.breaker || {}).filter(k => (j.breaker[k].paused_sec || 0) > 0);
+  el.innerHTML = (j.scheduler_enabled ? "" : "<b>Мониторинг на паузе</b> · ") +
+    (busy.length ? busy.map(([n, l]) => `${LANE_NAMES[n]}: ${esc(META.jobs[l.current.job] || l.current.job)}`).join(" · ") : "ожидание") +
+    (q ? ` · в очереди ${q}` : "") + (br.length ? ` · <span class="sev-high">приостановлены: ${esc(br.join(", "))}</span>` : "");
+  el.title = busy.map(([n, l]) => `${LANE_NAMES[n]}: ${l.current.progress || ""}`).join("\n");
+  const pb = $("#pauseBtn");
+  pb.textContent = j.scheduler_enabled ? "⏸ Пауза" : "▶ Возобновить";
+  pb.dataset.on = j.scheduler_enabled ? "1" : "0";
+}
+async function liveTick() {
+  if (LIVE.busy || !META) return;
+  LIVE.busy = true;
+  try {
+    const r = route();
+    const d = await api(`/api/live?since=${encodeURIComponent(LIVE.since)}` + (r.name === "token" ? `&uid=${encodeURIComponent(r.arg)}` : ""));
+    renderMonitor(d.jobs);
+    const b = $("#alertBadge"); b.textContent = d.alerts_open; b.classList.toggle("hidden", !d.alerts_open);
+    if (LIVE.since) (d.new_alerts || []).filter(a => a.severity === "high").slice(0, 2).forEach(a => toast("Сигнал: " + a.title));
+    const changed = d.tokens_changed > 0 || (d.new_alerts || []).length > 0;
+    let want = false;
+    if (r.name === "token") {
+      want = (LIVE.tokenUpdated && d.token_updated_at !== LIVE.tokenUpdated) || (LIVE.tokenEvents != null && d.token_events !== LIVE.tokenEvents);
+      LIVE.tokenUpdated = d.token_updated_at; LIVE.tokenEvents = d.token_events;
+    } else if (r.name === "alerts") want = (d.new_alerts || []).length > 0;
+    else if (["scanner", "dashboard", "review", "watchlist", "hidden", "tokenomics"].includes(r.name)) want = changed && Date.now() - LIVE.lastSoft > 15000;
+    LIVE.since = d.now;
+    if (want) {
+      if (userIsEditing()) { $("#liveNote").classList.remove("hidden"); }
+      else { LIVE.lastSoft = Date.now(); await render(true); $("#liveNote").classList.add("hidden"); }
+    }
+    if (r.name === "token" && Date.now() - (LIVE.lastFocus || 0) > 30000) {
+      LIVE.lastFocus = Date.now(); api("/api/focus/" + encodeURIComponent(r.arg), { method: "POST" }).catch(() => { });
+    }
+  } catch { } finally { LIVE.busy = false; }
+}
+async function pollJobs() { return liveTick(); }
+$("#scanBtn").onclick = async () => { await api("/api/scan", { method: "POST", body: {} }); toast("Обнаружение по всем сетям поставлено в очередь (обычно не требуется: мониторинг работает автоматически)."); liveTick(); };
+$("#pauseBtn").onclick = async () => { const on = $("#pauseBtn").dataset.on === "1"; await api("/api/monitoring", { method: "POST", body: { enabled: !on } }); toast(on ? "Мониторинг приостановлен" : "Мониторинг возобновлён"); liveTick(); };
 
 /* ---------- маршрутизация ---------- */
 function route() { const h = location.hash.replace(/^#\//, ""); const [name, ...rest] = h.split("/"); return { name: name || "dashboard", arg: decodeURIComponent(rest.join("/")) }; }
-async function render() {
-  clearCharts();
+async function render(soft = false) {
   const r = route();
+  const sc = soft ? saveScroll() : null;
+  if (!soft) { LIVE.tokenUpdated = null; LIVE.tokenEvents = null; LIVE.lastFocus = 0; }
   document.querySelectorAll("#nav a").forEach(a => a.classList.toggle("active", a.dataset.r === r.name || (r.name === "token" && a.dataset.r === "scanner")));
   const v = $("#view");
   try {
-    const fn = { dashboard: vDashboard, scanner: vScanner, token: vToken, review: vReview, watchlist: vWatch, tokenomics: vTokenomics, alerts: vAlerts, sources: vSources, settings: vSettings }[r.name] || vDashboard;
-    await fn(v, r.arg);
-  } catch (e) { v.innerHTML = `<div class="warnbox">Ошибка: ${esc(e.message)}</div>`; }
+    const fn = { dashboard: vDashboard, scanner: vScanner, token: vToken, review: vReview, watchlist: vWatch, hidden: vHidden, tokenomics: vTokenomics, alerts: vAlerts, sources: vSources, settings: vSettings }[r.name] || vDashboard;
+    if (r.name === "settings" && soft) return;  // настройки — только по действию пользователя
+    if (!soft || !["scanner", "token"].includes(r.name)) clearCharts();
+    await fn(v, r.arg, soft);
+    if (sc) restoreScroll(sc);
+  } catch (e) { if (!soft) v.innerHTML = `<div class="warnbox">Ошибка: ${esc(e.message)}</div>`; }
 }
-window.addEventListener("hashchange", render);
+window.addEventListener("hashchange", () => render(false));
 
 /* ---------- Обзор ---------- */
 async function vDashboard(v) {
@@ -102,25 +151,27 @@ async function vDashboard(v) {
   const L = d.levels || {}, S = d.statuses || {};
   const tile = (l, val, s = "") => `<div class="card tile"><div class="l">${l}</div><div class="v">${val}</div><div class="s">${s}</div></div>`;
   v.innerHTML = `<h1>Обзор</h1>
-  ${!d.tokens ? `<div class="card"><b>База пока пуста.</b> Нажмите <b>«Сканировать»</b> справа вверху — программа получит реальные новые пулы из GeckoTerminal, проверит токены и покажет, почему каждый подходит или нет.</div>` : ""}
+  ${!d.tokens ? `<div class="card"><b>База пока пуста.</b> Мониторинг уже запущен: первые реальные токены появятся здесь автоматически через 1–3 минуты.</div>` : ""}
   <div class="grid g4">
     ${tile("Пулов в базе", num(d.pools), `за 24 ч: ${num(d.pools_24h)}`)}
     ${tile("Уникальных токенов", num(d.tokens), `служебных активов: ${num(d.service_assets)}`)}
     ${tile("DeFi-кандидатов (C–E)", num((L.C || 0) + (L.D || 0) + (L.E || 0)), `B: ${num(L.B || 0)} · D: ${num(L.D || 0)} · E: ${num(L.E || 0)}`)}
-    ${tile("Прошли все 6 фильтров", num(S.PASS || 0), "PASS (вкл. предварительные)")}
+    ${tile("Прошли все 5 обязательных фильтров", num(S.PASS || 0), "PASS (вкл. предварительные)")}
     ${tile("Требуют ручной проверки", `<a href="#/review">${num(S["MANUAL REVIEW"] || 0)}</a>`, "UNKNOWN по части фильтров")}
     ${tile("Отклонено", num(S.FAIL || 0), "с причиной и доказательством")}
     ${tile("В наблюдении", `<a href="#/watchlist">${num(d.watchlist)}</a>`)}
     ${tile("Открытых сигналов", `<a href="#/alerts">${num(d.alerts_open)}</a>`)}
+    ${tile("Скрыто мной", `<a href="#/hidden">${num(d.hidden)}</a>`, "из лучших кандидатов")}
+    ${tile("MCAP по типам", `<span style="font-size:15px">подтв. ${num((d.mcap_types || {}).CONFIRMED || 0)} · оценка ${num((d.mcap_types || {}).ESTIMATED || 0)} · неизв. ${num((d.mcap_types || {}).UNKNOWN || 0)}</span>`, `<a href="#/scanner" onclick="scanQ.mode='mcap_unclear'">MCAP требует уточнения →</a>`)}
   </div>
-  <h2>Лучшие DeFi-кандидаты (предварительная оценка)</h2>
-  <div class="card">${tokenTable(d.top, true)}</div>
+  <h2>Лучшие DeFi-кандидаты <span class="small muted">автоматический рейтинг; скрытые вами не показываются</span></h2>
+  <div class="card">${tokenTable(d.top, "best")}</div>
   <div class="grid g2">
     <div><h2>Покрытие по сетям (новые пулы)</h2><div class="card">${coverageTable(d.coverage)}</div></div>
     <div><h2>Последние сигналы</h2><div class="card">${d.recent_alerts.length ? d.recent_alerts.map(a => `<div class="small"><span class="sev-${esc(a.severity)}">●</span> ${dt(a.created_at)} — ${a.token_uid ? `<a href="#/token/${encodeURIComponent(a.token_uid)}">${esc(a.title)}</a>` : esc(a.title)}</div>`).join("") : '<span class="muted">сигналов пока нет</span>'}</div>
       <h2>Подключения</h2><div class="card">${srcTable(d.sources)}</div></div>
   </div>
-  <p class="muted small">Фоновый сбор: ${d.scheduler_enabled ? "включён" : "выключен (включается в «Настройках»)"} · сети: ${esc(d.chains_enabled.join(", "))}</p>`;
+  <p class="muted small">Фоновый мониторинг: ${d.scheduler_enabled ? "включён — данные обновляются автоматически, пока программа открыта и компьютер не спит" : "на паузе (кнопка «Возобновить» вверху)"} · сети: ${esc(d.chains_enabled.join(", "))}</p>`;
 }
 function coverageTable(cov) {
   if (!cov || !cov.length) return '<span class="muted">нет данных</span>';
@@ -135,28 +186,34 @@ function srcTable(s) {
 /* ---------- таблица токенов ---------- */
 const COLS = [
   ["symbol", "Проект / тикер"], ["chain", "Сеть"], ["address", "Контракт"], ["first_trade", "Начало торгов"], ["age_days", "Возраст"],
-  ["price", "Цена"], ["mcap", "MCAP"], ["fdv_total", "FDV"], ["liquidity", "Ликвидность"], ["volume", "Объём 24ч"], ["drawdown", "От ATH"],
-  ["f_age", "Ф1 Возраст"], ["f_mcap", "Ф2 MCAP"], ["f_drawdown", "Ф3 ATH"], ["f_vc", "Ф4 No-VC"], ["f_utility", "Ф5 DeFi"], ["f_ecosystem", "Ф6 Сеть"],
+  ["price", "Цена"], ["mcap", "MCAP"], ["mcap_type", "Тип MCAP"], ["fdv_total", "FDV"], ["circ_supply", "Circulating"], ["total_supply", "Total supply"],
+  ["liquidity", "Ликвидность"], ["volume", "Объём 24ч"], ["drawdown", "От ATH"],
+  ["f_age", "Ф1 Возраст"], ["f_mcap", "Ф2 MCAP"], ["f_drawdown", "Ф3 ATH"], ["f_utility", "Ф4 DeFi"], ["f_ecosystem", "Ф5 Сеть"],
   ["level", "Ур."], ["status", "Статус"], ["score_preliminary", "Оценка"], ["confidence", "Достов."],
 ];
 let tableState = { sort: null, dir: -1 };
 function tokenTable(rows, compact = false) {
   if (!rows || !rows.length) return '<span class="muted">нет записей</span>';
   if (tableState.sort) rows = [...rows].sort((a, b) => { const x = a[tableState.sort], y = b[tableState.sort]; if (x == null) return 1; if (y == null) return -1; return (x > y ? 1 : x < y ? -1 : 0) * tableState.dir; });
-  const cols = compact ? COLS.filter(c => !["address", "fdv_total", "volume", "confidence"].includes(c[0])) : COLS;
-  return `<table class="tok"><thead><tr>${cols.map(c => `<th data-k="${c[0]}" class="${["price", "mcap", "fdv_total", "liquidity", "volume", "drawdown", "age_days", "score_preliminary"].includes(c[0]) ? "num" : ""}">${c[1]}${tableState.sort === c[0] ? (tableState.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead><tbody>
+  const cols = (compact ? COLS.filter(c => !["address", "fdv_total", "volume", "confidence", "circ_supply", "total_supply"].includes(c[0])) : COLS)
+    .concat(compact === "best" ? [["_hide", ""]] : []);
+  return `<table class="tok"><thead><tr>${cols.map(c => `<th data-k="${c[0]}" class="${["price", "mcap", "fdv_total", "liquidity", "volume", "drawdown", "age_days", "score_preliminary", "circ_supply", "total_supply"].includes(c[0]) ? "num" : ""}">${c[1]}${tableState.sort === c[0] ? (tableState.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead><tbody>
   ${rows.map(r => `<tr>${cols.map(c => cell(r, c[0])).join("")}</tr>`).join("")}</tbody></table>`;
 }
 function cell(r, k) {
   const u = `#/token/${encodeURIComponent(r.uid)}`;
   switch (k) {
-    case "symbol": return `<td><a href="${u}"><b>${esc(r.symbol || "?")}</b></a> <span class="muted small">${esc((r.name || "").slice(0, 28))}</span>${r.watch ? " ★" : ""}${r.protocol ? `<div class="small sec">↳ ${esc(r.protocol)}</div>` : ""}</td>`;
+    case "symbol": return `<td><a href="${u}"><b>${esc(r.symbol || "?")}</b></a> <span class="muted small">${esc((r.name || "").slice(0, 28))}</span>${r.watch ? ` <span title="в наблюдении: ${esc((META.watch_statuses || {})[r.watch_status] || "")}">★</span>` : ""}${r.hidden ? ' <span class="muted small" title="скрыт вами из лучших кандидатов">⦸</span>' : ""}${r.protocol ? `<div class="small sec">↳ ${esc(r.protocol)}</div>` : ""}</td>`;
     case "chain": return `<td class="small">${esc(r.chain_name)}</td>`;
     case "address": return `<td class="addr">${r.explorer ? link(r.explorer, short(r.address)) : esc(short(r.address))}</td>`;
     case "first_trade": return `<td class="small" title="${esc(r.age_basis || "")}">${dt(r.first_trade, false)}</td>`;
     case "age_days": return `<td class="num">${r.age_days == null ? '<span class="muted">н/д</span>' : num(r.age_days, 0) + " дн."}</td>`;
     case "price": return `<td class="num">${usd(r.price)}</td>`;
-    case "mcap": return `<td class="num" title="${esc(r.mcap_basis || "circulating не установлен — MCAP не приравнивается к FDV")}">${usd(r.mcap)}</td>`;
+    case "mcap": return `<td class="num mcapcell" data-uid="${esc(r.uid)}" title="Нажмите, чтобы увидеть, откуда взялась цифра. ${esc(r.mcap_basis || "")}">${mcapText(r)}${r.mcap_conflict ? ' <span class="sev-medium" title="конфликт источников">⚠</span>' : ""}</td>`;
+    case "mcap_type": return `<td class="small">${mcapBadge(r.mcap_type, r.mcap == null && r.mcap_high != null)}</td>`;
+    case "circ_supply": return `<td class="num small">${r.circ_supply == null ? '<span class="muted">н/д</span>' : fmtNum(r.circ_supply)}</td>`;
+    case "total_supply": return `<td class="num small">${r.total_supply == null ? '<span class="muted">н/д</span>' : fmtNum(r.total_supply)}</td>`;
+    case "_hide": return `<td><button class="small" data-hide="${esc(r.uid)}" title="Скрыть из лучших кандидатов (токен останется в базе)">скрыть</button></td>`;
     case "fdv_total": return `<td class="num">${usd(r.fdv_total)}</td>`;
     case "liquidity": return `<td class="num">${usd(r.liquidity)}</td>`;
     case "volume": return `<td class="num">${usd(r.volume)}</td>`;
@@ -168,34 +225,94 @@ function cell(r, k) {
     default: if (k.startsWith("f_")) return `<td>${st(r[k], r["c_" + k.slice(2)])}</td>`; return `<td>${esc(r[k])}</td>`;
   }
 }
+function mcapText(r) {
+  if (r.mcap != null) {
+    const range = r.mcap_low != null && r.mcap_high != null && Math.abs(r.mcap_high / r.mcap_low - 1) > 0.02 ? `<div class="small muted">${usd(r.mcap_low)}–${usd(r.mcap_high)}</div>` : "";
+    return usd(r.mcap) + range;
+  }
+  if (r.mcap_high != null) return `<span title="известна только верхняя граница">≤ ${usd(r.mcap_high)}</span>`;
+  return '<span class="muted">н/д</span>';
+}
+function mcapBadge(t, upperOnly) {
+  if (!t) return '<span class="muted">—</span>';
+  if (t === "CONFIRMED") return '<span class="st PASS" title="circulating подтверждён первоисточником">подтв.</span>';
+  if (t === "ESTIMATED") return `<span class="st UNKNOWN pre" title="${upperOnly ? "только верхняя граница" : "расчётная оценка / агрегатор"}">${upperOnly ? "граница" : "оценка"}</span>`;
+  return '<span class="st UNKNOWN">неизв.</span>';
+}
+async function showMcap(uid) {
+  const d = await api("/api/token/" + encodeURIComponent(uid));
+  const m = (d.facts || {}).mcap;
+  const box = $("#modal");
+  if (!m || !m.points) { box.innerHTML = `<div class="card">Оценка MCAP ещё не рассчитана.</div>`; }
+  else box.innerHTML = `<div class="card"><button class="small" style="float:right" id="mclose">закрыть</button>
+    <h2>MCAP ${esc(d.token.symbol)}: ${mcapBadge(m.type, m.value == null && m.high != null)} ${m.value != null ? usd(m.value) : (m.high != null ? "≤ " + usd(m.high) : "н/д")}</h2>
+    <p>${esc(m.reason)}</p>
+    <div class="kv"><div>Цена</div><div>${usd(m.price)} <span class="small muted">достоверность: ${esc(m.price_confidence)}; ${esc(((m.price_check || {}).method) || "")}</span>
+      ${((m.price_check || {}).flags || []).map(x => `<div class="small sev-medium">${esc(x)}</div>`).join("")}</div>
+      <div>Circulating supply</div><div>${m.circulating_supply != null ? num(m.circulating_supply) : '<span class="muted">не установлен</span>'}</div>
+      <div>Total supply</div><div>${m.total_supply != null ? num(m.total_supply) : "н/д"}</div>
+      <div>Стоимость выпущенного предложения</div><div>${usd(m.issued_value)} <span class="small muted">не равна circulating MCAP</span></div></div>
+    <h3>Источники и расчёты</h3><table><tr><th>Источник</th><th>Формула</th><th class="num">MCAP</th><th>Достоверность</th><th>Примечание</th></tr>
+    ${m.points.map(p_ => `<tr><td>${p_.url ? link(p_.url, p_.source) : esc(p_.source)}</td><td class="small mono">${esc(p_.formula)}</td><td class="num">${usd(p_.mcap)}</td><td>${esc(p_.confidence)}</td><td class="small">${esc(p_.note || "")}${p_.at ? " · " + dt(p_.at) : ""}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">прямых данных об обращении нет</td></tr>'}</table>
+    ${m.upper_bounds.length ? `<h3>Доказуемые верхние границы</h3><ul class="small">${m.upper_bounds.map(u => `<li>${usd(u.mcap)} — <span class="mono">${esc(u.formula)}</span> — ${esc(u.note)}${(u.excluded || []).length ? `<ul>${u.excluded.map(e => `<li>${esc(e.label)} ${esc(short(e.address))}: ${num(e.balance)} — ${esc(e.evidence || "")}</li>`).join("")}</ul>` : ""}</li>`).join("")}</ul>` : ""}
+    ${m.conflicts.length ? `<h3>Конфликты</h3><ul class="small">${m.conflicts.map(c => `<li class="sev-medium">${esc(c.kind)}: ${c.spread_pct != null ? Number(c.spread_pct).toFixed(0) + "%" : ""} ${esc(c.note || "")} ${(c.values || []).map(v => esc(v.source) + " " + usd(v.mcap)).join(", ")}</li>`).join("")}</ul>` : ""}
+    <h3>Шаги проверки</h3><ul class="small">${m.steps.map(x => `<li>Уровень ${x.level}: ${esc(x.name)} — ${esc(x.result)}</li>`).join("")}</ul>
+    ${m.limitations.length ? `<div class="small muted">Ограничения: ${esc(m.limitations.join("; "))}</div>` : ""}</div>`;
+  box.classList.remove("hidden");
+  const c = $("#mclose"); if (c) c.onclick = () => box.classList.add("hidden");
+  box.onclick = e => { if (e.target === box) box.classList.add("hidden"); };
+}
+document.addEventListener("click", e => {
+  const mc = e.target.closest(".mcapcell"); if (mc && !e.target.closest("a")) { showMcap(mc.dataset.uid); return; }
+  const hb = e.target.closest("[data-hide]"); if (hb) { hideToken(hb.dataset.hide); }
+});
+async function hideToken(uid) {
+  const reason = prompt("Причина исключения из лучших кандидатов (необязательно):", "");
+  if (reason === null) return;
+  const days = prompt("Скрыть на: 0 — бессрочно, 7 или 30 дней", "0");
+  if (days === null) return;
+  await api("/api/hide/" + encodeURIComponent(uid), { method: "POST", body: { reason, days: +days || null } });
+  toast("Скрыт из лучших кандидатов. Найти и восстановить — во вкладке «Скрытые мной».");
+  render(true);
+}
 function bindSort(container, rerender) {
   container.querySelectorAll("th[data-k]").forEach(th => th.onclick = () => { const k = th.dataset.k; tableState.dir = tableState.sort === k ? -tableState.dir : -1; tableState.sort = k; rerender(); });
 }
 
 /* ---------- Сканер ---------- */
-let scanQ = { search: "", chain: "", status: "", level: "", show_service: false };
-async function vScanner(v) {
+let scanQ = { search: "", chain: "", status: "", level: "", show_service: false, mode: "default" };
+async function vScanner(v, arg, soft) {
   const qs = new URLSearchParams({ ...scanQ, show_service: scanQ.show_service ? "true" : "false", limit: 2000 }).toString();
   const d = await api("/api/tokens?" + qs);
+  if (soft && $("#tw")) {  // мягкое обновление: только данные таблицы; поиск, фильтры и сортировка не трогаются
+    const sc = $("#tw").scrollTop;
+    $("#scanCount").innerHTML = `${num(d.total)} токенов${d.total > d.rows.length ? `, показано ${d.rows.length}` : ""} · обновлено ${dt(new Date().toISOString())}`;
+    const rr = () => { $("#tw").innerHTML = tokenTable(d.rows); bindSort($("#tw"), rr); };
+    rr(); $("#tw").scrollTop = sc;
+    return;
+  }
   const chains = Object.entries(META.chains).map(([k, c]) => `<option value="${k}" ${scanQ.chain === k ? "selected" : ""}>${esc(c.name)}</option>`).join("");
   const sts = ["PASS", "FAIL", "UNKNOWN", "MANUAL REVIEW", "STALE DATA", "DATA ERROR"].map(s => `<option ${scanQ.status === s ? "selected" : ""}>${s}</option>`).join("");
-  v.innerHTML = `<h1>Сканер <span class="muted small">${num(d.total)} токенов${d.total > d.rows.length ? `, показано ${d.rows.length}` : ""}</span></h1>
+  const modes = Object.entries(META.modes || {}).map(([k, n]) => `<option value="${k}" ${scanQ.mode === k ? "selected" : ""}>${esc(n)}</option>`).join("");
+  v.innerHTML = `<h1>Сканер <span class="muted small" id="scanCount">${num(d.total)} токенов${d.total > d.rows.length ? `, показано ${d.rows.length}` : ""}</span></h1>
   <div class="toolbar">
     <input id="q" placeholder="Поиск: тикер, название, адрес" value="${esc(scanQ.search)}" style="min-width:260px">
     <select id="fc"><option value="">Все сети</option>${chains}</select>
     <select id="fs"><option value="">Все статусы</option>${sts}</select>
     <select id="fl"><option value="">Все уровни</option>${["A", "B", "C", "D", "E", "B,C,D,E", "C,D,E"].map(l => `<option ${scanQ.level === l ? "selected" : ""} value="${l}">${l.length > 1 ? l + " (и выше)" : l + " — " + META.levels[l]}</option>`).join("")}</select>
+    <select id="fm" title="Режим сортировки">${modes}</select>
     <label class="small"><input type="checkbox" id="fsv" ${scanQ.show_service ? "checked" : ""}> служебные активы</label>
     <button id="apply">Применить</button>
     <span style="flex:1"></span>
     <button id="addTok">+ Добавить токен</button>
     <a href="/api/export.csv?${qs}"><button>CSV</button></a> <a href="/api/export.xlsx?${qs}"><button>XLSX</button></a>
   </div>
-  <div class="small muted" style="margin-bottom:8px">* — предварительный PASS (например, возраст по первой сделке без подтверждённого TGE). Наведите на статус, чтобы увидеть причину; полная аргументация — в карточке.</div>
+  <div class="small muted" style="margin-bottom:8px">Таблица обновляется автоматически. * — предварительный PASS. MCAP: «подтв.» — circulating подтверждён первоисточником, «оценка» — агрегатор/расчёт, «граница» — известна только верхняя граница. Нажмите на MCAP, чтобы увидеть расчёт.</div>
   <div class="tablewrap" id="tw">${tokenTable(d.rows)}</div>`;
   const rr = () => { $("#tw").innerHTML = tokenTable(d.rows); bindSort($("#tw"), rr); };
   bindSort($("#tw"), rr);
-  const apply = () => { scanQ = { search: $("#q").value.trim(), chain: $("#fc").value, status: $("#fs").value, level: $("#fl").value, show_service: $("#fsv").checked }; render(); };
+  const apply = () => { scanQ = { search: $("#q").value.trim(), chain: $("#fc").value, status: $("#fs").value, level: $("#fl").value, show_service: $("#fsv").checked, mode: $("#fm").value }; tableState.sort = null; render(); };
+  $("#fm").onchange = apply;
   $("#apply").onclick = apply; $("#q").onkeydown = e => { if (e.key === "Enter") apply(); };
   $("#addTok").onclick = async () => {
     const chain = prompt("Сеть (" + Object.keys(META.chains).join(", ") + "):", "robinhood"); if (!chain) return;
@@ -205,32 +322,74 @@ async function vScanner(v) {
 }
 
 /* ---------- Карточка проекта ---------- */
-async function vToken(v, uid) {
+const TOKEN_TAB = {};
+const FRESH_NAMES = { fresh: "актуально", updating: "обновляется", stale: "устарело", source_down: "источник недоступен", none: "ещё не получено" };
+function freshBar(d) {
+  const items = (d.freshness || []).map(x => {
+    const age = x.age_sec == null ? "" : x.age_sec < 120 ? `${Math.round(x.age_sec)} с назад` : x.age_sec < 7200 ? `${Math.round(x.age_sec / 60)} мин назад` : `${Math.round(x.age_sec / 3600)} ч назад`;
+    const tip = `${x.name}: ${FRESH_NAMES[x.state]}. Последнее успешное получение: ${x.ok_at || "нет"} UTC` + (x.interval_sec ? `; плановый интервал ${Math.round(x.interval_sec / 60)} мин` : "; автоматически не обновляется на этом уровне приоритета") +
+      (x.source_time ? `; последняя точка данных источника: ${x.source_time}` : "") + (x.error ? `; ошибка: ${x.error}` : "");
+    return `<span class="fb ${x.state === "fresh" ? "fresh_" : x.state}" title="${esc(tip)}">${esc(x.name)}: ${esc(FRESH_NAMES[x.state])}${age ? " · " + age : ""}</span>`;
+  });
+  const conf = ((d.facts || {}).mcap || {}).conflicts || [];
+  if (conf.length || (d.conflicts || []).some(c => !c.resolved)) items.push(`<span class="fb conflict" title="см. предупреждения ниже и расчёт MCAP">есть конфликт источников</span>`);
+  return `<div class="fresh">${items.join("")}</div>`;
+}
+async function vToken(v, uid, soft) {
   const d = await api("/api/token/" + encodeURIComponent(uid));
   const f = d.facts || {}, t = d.token, r = d.row, p = f.protocol || {}, oc = f.onchain || {}, sc = f.score || {};
-  const fOrder = ["age", "mcap", "drawdown", "vc", "utility", "ecosystem"];
+  const fOrder = Object.keys(META.filters);
   const ex = d.explorer_addr ? a => link(d.explorer_addr.replace("{address}", a), short(a)) : a => esc(short(a));
   const exTx = d.explorer_tx ? h => link(d.explorer_tx.replace("{tx}", h), short(h)) : h => esc(short(h));
-  v.innerHTML = `
-  <div class="toolbar"><a href="#/scanner">← Сканер</a><span style="flex:1"></span>
-    <button id="wBtn">${t.watch ? "★ В наблюдении (убрать)" : "☆ В наблюдение"}</button>
-    <button id="rBtn" class="primary">Обновить данные</button></div>
+  const head = () => `
   <h1>${esc(t.symbol || "?")} <span class="sec">${esc(t.name || "")}</span> ${st(t.status)} <span class="lvl">${esc(t.level)}</span> <span class="small muted">${esc(META.levels[t.level] || "")}</span></h1>
   <div class="small"><span class="addr">${esc(t.address_display || t.address)}</span> · ${esc(META.chains[t.chain].name)} ·
     ${link(d.links.explorer, "обозреватель")} · ${link(d.links.geckoterminal, "GeckoTerminal")} · ${link(d.links.dexscreener, "DEX Screener")} ${d.links.defillama ? "· " + link(d.links.defillama, "DefiLlama") : ""}</div>
   <p><b>Итог:</b> ${esc(t.status_reason || "")}</p>
   <p class="small muted">Обнаружен ${dt(t.first_seen_at)} через <b>${esc(t.discovery_source)}</b>: ${esc(t.discovery_reason || "")}</p>
   ${d.same_symbol.length ? `<div class="warnbox">Тикер <b>${esc(t.symbol)}</b> есть ещё у ${d.same_symbol.length} других контрактов в базе — это РАЗНЫЕ токены, их цены/ATH не смешиваются: ${d.same_symbol.slice(0, 8).map(s => `<a href="#/token/${encodeURIComponent(s.uid)}">${esc(s.chain)}:${esc(short(s.address_display || s.address))}${s.protocol_slug ? " (" + esc(s.protocol_slug) + ")" : ""}</a>`).join(", ")}</div>` : ""}
-  ${(d.conflicts || []).filter(c => !c.resolved).map(c => `<div class="warnbox">Конфликт источников (${esc(c.metric)}): ${esc(c.note)} · ${dt(c.detected_at)}</div>`).join("")}
-  <div class="tabs" id="tabs">${["Фильтры", "Метрики", "Фундаментал", "Токеномика", "Безопасность", "Оценка", "Пулы", "История", "Ручные данные"].map((x, i) => `<button data-t="${i}" class="${i === 0 ? "active" : ""}">${x}</button>`).join("")}</div>
+  ${(d.conflicts || []).filter(c => !c.resolved).slice(0, 3).map(c => `<div class="warnbox">Конфликт источников (${esc(c.metric)}): ${esc(c.note)} · ${dt(c.detected_at)}</div>`).join("")}
+  ${d.hidden ? `<div class="warnbox">Скрыт вами из лучших кандидатов ${dt(d.hidden.hidden_at)}${d.hidden.until ? " до " + dt(d.hidden.until) : ""}${d.hidden.reason ? ": " + esc(d.hidden.reason) : ""}</div>` : ""}
+  <div class="kv" style="max-width:760px"><div>Цена</div><div>${usd(r.price)}${(f.price_check || {}).confidence ? ` <span class="small muted">достоверность: ${esc(f.price_check.confidence)}</span>` : ""}</div>
+    <div>MCAP</div><div class="mcapcell" data-uid="${esc(uid)}">${mcapText(r)} ${mcapBadge(r.mcap_type, r.mcap == null && r.mcap_high != null)} <span class="small muted">нажмите — расчёт и источники</span></div>
+    <div>Ликвидность (качественные пулы)</div><div>${usd(r.liquidity)}</div></div>`;
+  const tabNames = ["Фильтры", "Метрики", "Фундаментал", "Токеномика", "Безопасность", "Оценка", "Пулы", "История", "Ручные данные"];
+  if (soft && $("#tokHead") && $("#tokHead").dataset.uid === uid) {
+    $("#tokHead").innerHTML = head();
+    $("#tokFresh").innerHTML = freshBar(d);
+    const cur = TOKEN_TAB[uid] || 0;
+    const form = $("#tabc form[data-dirty='1']");
+    if (!form) { clearCharts(); $("#tabc").innerHTML = tabsFn(d, f, r, p, oc, sc, uid, fOrder)[cur](); afterTab(cur, d, f, uid); }
+    return;
+  }
+  v.innerHTML = `
+  <div class="toolbar"><a href="#/scanner">← Сканер</a><span style="flex:1"></span>
+    <select id="wSt" title="Мой статус в личном наблюдении">${t.watch ? "" : '<option value="">— не в наблюдении —</option>'}${Object.entries(META.watch_statuses).map(([k, n]) => `<option value="${k}" ${t.watch_status === k ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+    ${t.watch ? '<button id="wDel">убрать из наблюдения</button>' : ""}
+    ${d.hidden ? '<button id="hBtn">Вернуть в лучшие кандидаты</button>' : '<button id="hBtn">Скрыть из лучших кандидатов</button>'}
+    <button id="rBtn" class="primary" title="Обычно не нужно: открытая карточка обновляется автоматически с повышенным приоритетом">Обновить сейчас</button></div>
+  <div id="tokFresh">${freshBar(d)}</div>
+  <div id="tokHead" data-uid="${esc(uid)}">${head()}</div>
+  <div class="tabs" id="tabs">${tabNames.map((x, i) => `<button data-t="${i}" class="${i === (TOKEN_TAB[uid] || 0) ? "active" : ""}">${x}</button>`).join("")}</div>
   <div id="tabc"></div>`;
-  $("#wBtn").onclick = async () => { await api("/api/watchlist/" + encodeURIComponent(uid), { method: t.watch ? "DELETE" : "POST", body: {} }); render(); };
-  $("#rBtn").onclick = async () => { await api("/api/token/" + encodeURIComponent(uid) + "/refresh", { method: "POST" }); toast("Обновление поставлено в очередь"); pollJobs(); };
-  const tabs = [
+  $("#wSt").onchange = async () => { if (!$("#wSt").value) return; await api("/api/watchlist/" + encodeURIComponent(uid), { method: "POST", body: { status: $("#wSt").value } }); toast("Сохранено: проект в личном наблюдении (повышенный приоритет обновления)"); render(); };
+  if ($("#wDel")) $("#wDel").onclick = async () => { await api("/api/watchlist/" + encodeURIComponent(uid), { method: "DELETE" }); render(); };
+  $("#hBtn").onclick = async () => { if (d.hidden) { await api("/api/unhide/" + encodeURIComponent(uid), { method: "POST", body: {} }); toast("Возвращён к рейтингу"); render(); } else hideToken(uid).then(() => render()); };
+  $("#rBtn").onclick = async () => { await api("/api/token/" + encodeURIComponent(uid) + "/refresh", { method: "POST" }); toast("Обновление поставлено в очередь"); liveTick(); };
+  api("/api/focus/" + encodeURIComponent(uid), { method: "POST" }).catch(() => { });
+  const tabs = tabsFn(d, f, r, p, oc, sc, uid, fOrder);
+  const show = i => { TOKEN_TAB[uid] = i; clearCharts(); document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", +b.dataset.t === i)); $("#tabc").innerHTML = tabs[i](); afterTab(i, d, f, uid); };
+  document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => show(+b.dataset.t));
+  show(TOKEN_TAB[uid] || 0);
+}
+function tabsFn(d, f, r, p, oc, sc, uid, fOrder) {
+  const ex = d.explorer_addr ? a => link(d.explorer_addr.replace("{address}", a), short(a)) : a => esc(short(a));
+  const exTx = d.explorer_tx ? h => link(d.explorer_tx.replace("{tx}", h), short(h)) : h => esc(short(h));
+  return [
     () => `<h2>Почему проект подходит или не подходит</h2>${fOrder.map(k => filterBox(d.filters[k], k)).join("")}
       <h2>Что проверить человеку перед решением</h2><ul>${checklist(d).map(x => `<li>${esc(x)}</li>`).join("")}</ul>`,
     () => metricsTab(d, f, r),
-    () => fundTab(p, f),
+    () => fundTab(p, f) + fundingBlock(f.funding),
     () => tokenomicsTab(d, f, oc, ex, exTx),
     () => securityTab(oc.security),
     () => scoreTab(sc),
@@ -238,9 +397,13 @@ async function vToken(v, uid) {
     () => historyTab(d),
     () => manualTab(d, uid),
   ];
-  const show = i => { clearCharts(); document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", +b.dataset.t === i)); $("#tabc").innerHTML = tabs[i](); afterTab(i, d, f, uid); };
-  document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => show(+b.dataset.t));
-  show(0);
+}
+function fundingBlock(fa) {
+  if (!fa) return "";
+  return `<h2>Финансирование <span class="small muted">аналитика рисков, не фильтр</span></h2><div class="card">
+    <p class="small sec">${esc(fa.note)}</p>
+    ${fa.rounds.length ? `<table><tr><th>Категория</th><th>Инвесторы / описание</th><th class="num">Сумма</th><th class="num">Оценка раунда</th><th>Источник</th></tr>${fa.rounds.map(r_ => `<tr><td>${esc(r_.category_name)}</td><td class="small">${esc(r_.value || "")} ${esc(r_.note || "")}</td><td class="num">${usd(r_.amount_usd)}</td><td class="num">${usd(r_.valuation_usd)}</td><td class="small">${r_.url ? link(r_.url, r_.source) : esc(r_.source || "")}</td></tr>`).join("")}</table>` : '<span class="muted">Данных о раундах нет (это не доказательство отсутствия VC).</span>'}
+    ${fa.risks.length ? `<h3>Факторы риска</h3><ul>${fa.risks.map(x => `<li class="sev-medium">${esc(x)}</li>`).join("")}</ul>` : ""}</div>`;
 }
 function filterBox(fr, k) {
   if (!fr) return `<div class="filterbox UNKNOWN"><b>${esc(META.filters[k])}</b> — не оценивался</div>`;
@@ -396,10 +559,12 @@ function manualTab(d, uid) {
       <option value="team">Команда проверена (yes/no)</option><option value="catalyst">Катализатор</option><option value="official_link">Официальная ссылка</option><option value="note">Заметка</option></select></label>
     <label>Значение<input name="value"></label>
     <label>Категория финансирования<select name="category"><option value=""></option>${cats}</select></label>
+    <label>Сумма раунда, $<input name="amount_usd" placeholder="для финансирования"></label>
+    <label>Оценка раунда, $<input name="valuation_usd" placeholder="для финансирования"></label>
     <label>Ссылка-доказательство<input name="evidence_url" placeholder="https://"></label>
     <label>Тип источника<select name="source_type"><option value="official_docs">официальная документация</option><option value="official_social">официальные соцсети</option><option value="onchain">ончейн</option><option value="third_party">сторонний источник</option><option value="user">мой вывод</option></select></label>
     <label>Примечание<input name="note"></label><button class="primary">Сохранить</button></form>
-    <div class="small muted">PASS по No-VC ставится только категорией «Отсутствие внешнего финансирования задокументировано» с обязательной ссылкой. Ангел/грант/публичная продажа не приравниваются к VC.</div></div>
+    <div class="small muted">Финансирование (VC, ангелы, гранты, публичные продажи) больше не является фильтром: оно учитывается как фактор риска (сумма раунда против MCAP, аллокации и разлоки инвесторов). Ангел/грант/публичная продажа не приравниваются к VC.</div></div>
   <div class="card"><h3>Новая версия токеномики</h3><form class="inline" id="tnForm">
     <label>Название версии<input name="version_label" required></label><label>Дата публикации<input name="published_at" placeholder="2026-10-20"></label>
     <label>Источник (URL)<input name="source_url"></label><label>Тип источника<select name="source_type"><option value="official_docs">официальная документация</option><option value="official_social">официальные соцсети</option><option value="third_party">сторонний</option></select></label>
@@ -407,6 +572,8 @@ function manualTab(d, uid) {
     <label style="grid-column:1/-1">Параметры (JSON: max_supply, weekly_budgets[{week,start,amount}], unlocks[{date,amount,note}] …)<textarea name="params">{"max_supply": null}</textarea></label>
     <label style="grid-column:1/-1">Примечание<input name="note"></label><button class="primary">Добавить версию</button></form></div>
   <div class="card"><h3>Метка адреса</h3><form class="inline" id="lbForm"><label>Адрес<input name="address" required></label><label>Метка<input name="label" required></label>
+    <label>В обращении?<select name="circulation"><option value="uncertain">не известно</option><option value="excluded">доказательно НЕ в обращении</option><option value="included">в обращении</option></select></label>
+    <label>Доказательство блокировки<input name="circulation_evidence" placeholder="документ/контракт"></label>
     <label>Вид<select name="kind"><option>escrow</option><option>treasury</option><option>team</option><option>gauge</option><option>emissions</option><option>vesting</option><option>cex</option><option>dex_pool</option><option>minter</option><option>other</option></select></label>
     <label>Доказательство (URL)<input name="source_url"></label><button class="primary">Сохранить</button></form></div>`;
 }
@@ -452,7 +619,7 @@ function afterTab(i, d, f, uid) {
 async function vReview(v) {
   const d = await api("/api/review");
   v.innerHTML = `<h1>Очередь ручной проверки <span class="muted small">${d.total}</span></h1>
-  <p class="sec small">Здесь кандидаты без FAIL, у которых часть критериев UNKNOWN (чаще всего No-VC). UNKNOWN ≠ FAIL: проект не скрыт, но и не считается прошедшим.</p>
+  <p class="sec small">Кандидаты без FAIL, у которых часть из пяти обязательных критериев UNKNOWN (часто — MCAP или утилити). UNKNOWN ≠ FAIL: проект не скрыт, но и не считается прошедшим. Система продолжает сама уточнять данные.</p>
   <div class="tablewrap"><table><tr><th>Проект</th><th>Сеть</th><th>Ур.</th><th>Оценка</th><th>Что проверить</th></tr>
   ${d.rows.map(r => `<tr><td><a href="#/token/${encodeURIComponent(r.uid)}"><b>${esc(r.symbol)}</b></a> <span class="muted small">${esc(r.name || "")}</span></td><td>${esc(r.chain_name)}</td><td><span class="lvl">${esc(r.level)}</span></td><td class="num">${r.score_preliminary == null ? "—" : r.score_preliminary.toFixed(0)}</td><td class="small">${r.needs.map(n => `<div><b>${esc(n.filter)}</b>: ${esc(n.reason)}</div>`).join("")}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">очередь пуста</td></tr>'}</table></div>`;
 }
@@ -461,9 +628,26 @@ async function vReview(v) {
 async function vWatch(v) {
   const d = await api("/api/watchlist");
   v.innerHTML = `<h1>Список наблюдения <span class="muted small">${d.total}</span></h1>
-  <p class="small sec">Проекты для углублённого ручного исследования. Добавляются кнопкой «☆ В наблюдение» в карточке. Для них регулярно обновляются данные и ончейн-проверки.</p>
-  <div class="tablewrap" id="tw">${tokenTable(d.rows)}</div>`;
-  const rr = () => { $("#tw").innerHTML = tokenTable(d.rows); bindSort($("#tw"), rr); }; bindSort($("#tw"), rr);
+  <p class="small sec">Ваш личный список. Для этих проектов данные обновляются с повышенным приоритетом (котировки — каждые ~2 мин, ончейн — каждые ~15 мин), в том числе после превышения возраста 90 дней. Статус — ваш, он не влияет на объективный скоринг.</p>
+  <div class="tablewrap" id="tw"><table><tr><th>Проект</th><th>Сеть</th><th>Мой статус</th><th class="num">Цена</th><th class="num">MCAP</th><th>Тип</th><th class="num">Ликвидность</th><th>Ур.</th><th>Статус отбора</th><th class="num">Оценка</th><th>Обновлено</th></tr>
+  ${d.rows.map(r => `<tr><td><a href="#/token/${encodeURIComponent(r.uid)}"><b>${esc(r.symbol)}</b></a> <span class="small muted">${esc(r.name || "")}</span></td><td>${esc(r.chain_name)}</td>
+    <td><select data-wst="${esc(r.uid)}">${Object.entries(META.watch_statuses).map(([k, n]) => `<option value="${k}" ${r.watch_status === k ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></td>
+    <td class="num">${usd(r.price)}</td><td class="num mcapcell" data-uid="${esc(r.uid)}">${mcapText(r)}</td><td>${mcapBadge(r.mcap_type, r.mcap == null && r.mcap_high != null)}</td><td class="num">${usd(r.liquidity)}</td>
+    <td><span class="lvl">${esc(r.level)}</span></td><td>${st(r.status)}</td><td class="num">${r.score_preliminary == null ? "—" : r.score_preliminary.toFixed(0)}</td><td class="small">${dt(r.last_market_at)}</td></tr>`).join("") || '<tr><td colspan="11" class="muted">список пуст — добавьте проект кнопкой «☆ В наблюдение» в его карточке</td></tr>'}</table></div>`;
+  v.querySelectorAll("[data-wst]").forEach(sel => sel.onchange = async () => { await api("/api/watchlist/" + encodeURIComponent(sel.dataset.wst), { method: "POST", body: { status: sel.value } }); toast("Статус сохранён"); });
+}
+
+/* ---------- Скрытые мной ---------- */
+async function vHidden(v) {
+  const d = await api("/api/hidden");
+  v.innerHTML = `<h1>Скрытые / исключённые мной <span class="muted small">${d.total}</span></h1>
+  <p class="small sec">Эти токены не показываются в автоматическом рейтинге лучших кандидатов и не возвращаются туда сами (кроме временного скрытия на 7/30 дней). Они остаются в общей базе, их история и проверки сохраняются, их можно найти поиском в «Сканере».</p>
+  <div class="tablewrap"><table><tr><th>Тикер</th><th>Название</th><th>Сеть</th><th>Контракт</th><th>Скрыт</th><th>До</th><th>Причина</th><th class="num">Оценка</th><th>Статус</th><th></th></tr>
+  ${d.rows.map(r => `<tr><td><a href="#/token/${encodeURIComponent(r.uid)}"><b>${esc(r.symbol)}</b></a></td><td class="small">${esc(r.name || "")}</td><td>${esc(r.chain_name)}</td>
+    <td class="addr">${r.explorer ? link(r.explorer, short(r.address)) : esc(short(r.address))}</td><td class="small">${dt(r.hidden_at)}</td><td class="small">${r.hidden_until ? dt(r.hidden_until) : "бессрочно"}</td>
+    <td class="small">${esc(r.hidden_reason || "")}</td><td class="num">${r.score_preliminary == null ? "—" : r.score_preliminary.toFixed(0)}</td><td>${st(r.status)}</td>
+    <td><button class="small" data-unhide="${esc(r.uid)}">Восстановить</button></td></tr>`).join("") || '<tr><td colspan="10" class="muted">нет скрытых токенов</td></tr>'}</table></div>`;
+  v.querySelectorAll("[data-unhide]").forEach(b => b.onclick = async () => { await api("/api/unhide/" + encodeURIComponent(b.dataset.unhide), { method: "POST", body: {} }); toast("Восстановлен: снова может попасть в лучшие кандидаты"); render(); });
 }
 
 /* ---------- Токеномика ---------- */
@@ -508,22 +692,27 @@ async function vSettings(v) {
   const s = d.settings;
   const fld = (path, label, hint = "") => { const val = path.split(".").reduce((o, k) => o[k], s); return `<label>${esc(label)}<input data-p="${path}" value="${esc(Array.isArray(val) ? val.join(",") : val)}">${hint ? `<span class="muted">${esc(hint)}</span>` : ""}</label>`; };
   v.innerHTML = `<h1>Настройки</h1>
-  <div class="card"><h3>Шесть фильтров</h3><form class="inline">
+  <div class="card"><h3>Пять обязательных фильтров</h3><form class="inline">
     ${fld("filters.max_age_days", "Макс. возраст, дней")}${fld("filters.max_circ_mcap_usd", "Макс. circulating MCAP, $")}${fld("filters.max_drawdown_pct", "Макс. просадка от ATH, %")}
     ${fld("filters.ath_wick_factor", "Фильтр хвостов свечей, ×", "high > k × тела = аномалия")}${fld("filters.min_pool_liquidity_usd", "Мин. ликвидность пула для цены/ATH, $")}
     ${fld("filters.price_outlier_pct", "Отклонение цены пула от медианы, %")}${fld("filters.mcap_conflict_pct", "Порог конфликта MCAP источников, %")}
-    ${fld("filters.vc_fail_categories", "Категории = VC (FAIL)", "через запятую: vc_fund, strategic…")}
+    ${fld("filters.vc_fail_categories", "Категории финансирования, считающиеся VC (только анализ рисков, не фильтр)", "через запятую: vc_fund, strategic…")}
     ${fld("filters.chain_min_tvl_usd", "Сеть: мин. TVL, $")}${fld("filters.chain_max_tvl_decline_90d_pct", "Сеть: макс. падение TVL 90д, %")}
     ${fld("filters.chain_min_dex_volume_30d_usd", "Сеть: мин. DEX-объём 30д, $")}${fld("filters.chain_max_stable_decline_90d_pct", "Сеть: макс. падение стейблкоинов 90д, %")}
   </form></div>
   <div class="card"><h3>Рыночный минимум (уровень B) и оценка</h3><form class="inline">${fld("market_minimum.min_liquidity_usd", "Мин. ликвидность, $")}${fld("market_minimum.min_volume_24h_usd", "Мин. объём 24ч, $")}${fld("scoring.watchlist_min_preliminary", "Мин. предв. оценка для уровня E")}</form></div>
   <div class="card"><h3>Сети</h3>${Object.entries(d.chains).map(([k, c]) => `<label class="small" style="margin-right:14px"><input type="checkbox" data-chain="${k}" ${d.enabled_chains.includes(k) ? "checked" : ""}> ${esc(c.name)} <span class="muted">(${esc(c.support)})</span></label>`).join("")}</div>
   <div class="card"><h3>Обнаружение и интервалы</h3><form class="inline">
-    <label>Фоновый сбор<select data-p="scheduler_enabled"><option value="false" ${!s.scheduler_enabled ? "selected" : ""}>выключен</option><option value="true" ${s.scheduler_enabled ? "selected" : ""}>включён</option></select></label>
+    <label>Фоновый мониторинг<select data-p="scheduler_enabled"><option value="true" ${s.scheduler_enabled ? "selected" : ""}>включён (рекомендуется)</option><option value="false" ${!s.scheduler_enabled ? "selected" : ""}>на паузе</option></select></label>
     ${fld("intervals_min.discovery", "Новые пулы, каждые N мин")}${fld("intervals_min.candidates_refresh", "Проверка кандидатов, мин")}${fld("intervals_min.fundamentals", "Фундаментал, мин")}${fld("intervals_min.weekly_snapshot", "Недельный снимок, мин")}${fld("intervals_min.backup", "Резервная копия, мин")}
     ${fld("discovery.max_pages_per_chain", "Макс. страниц new_pools на сеть")}${fld("discovery.historical_top_pools_pages", "Страниц топ-пулов (исторический добор)")}
     <label>DEX Screener профили (промо)<select data-p="discovery.dexscreener_profiles"><option value="false" ${!s.discovery.dexscreener_profiles ? "selected" : ""}>выключено</option><option value="true" ${s.discovery.dexscreener_profiles ? "selected" : ""}>включено (нерепрезентативно)</option></select></label>
   </form></div>
+  <div class="card"><h3>Частота обновления токенов по приоритету, секунд <span class="small muted">0 — не обновлять автоматически</span></h3>
+    <div class="small muted">Уровни: 0 — открытая карточка, 1 — моё наблюдение, 2 — лучшие кандидаты, 3 — предварительно интересные, 4 — прочие, 5 — отклонённые и скрытые.</div>
+    <table><tr><th>Вид</th>${[0, 1, 2, 3, 4, 5].map(i => `<th>${i}</th>`).join("")}</tr>
+    ${Object.entries({ quote: "Цена и ликвидность", deep: "Пулы, свечи, ATH", onchain: "Ончейн mint/burn", fundamentals: "DefiLlama", coingecko: "CoinGecko" }).map(([k, n]) =>
+      `<tr><td>${n}</td>${[0, 1, 2, 3, 4, 5].map(i => `<td><input style="width:80px" data-p="refresh_sec.${k}.${i}" value="${esc(((s.refresh_sec || {})[k] || {})[String(i)] ?? 0)}"></td>`).join("")}</tr>`).join("")}</table></div>
   <div class="card"><h3>Сигналы</h3><form class="inline">${fld("alerts.tvl_outperform_pp", "TVL быстрее сети, п.п.")}${fld("alerts.fees_growth_pct", "Рост комиссий, %")}${fld("alerts.liquidity_drop_pct", "Падение ликвидности, %")}${fld("alerts.emission_spike_x", "Всплеск эмиссии, ×")}${fld("alerts.streak_periods", "Недель подряд")}${fld("alerts.stale_hours", "Данные устарели через, ч")}${fld("alerts.unlock_lookahead_days", "Предупреждать о unlock за, дн.")}</form></div>
   <div class="card"><h3>Лимиты API (запросов/мин)</h3><form class="inline">${Object.keys(s.rate_limits_per_min).map(k => fld("rate_limits_per_min." + k, k)).join("")}</form></div>
   <p><button class="primary" id="saveS">Сохранить настройки</button> <button id="reevalS">Пересчитать фильтры для всех токенов</button></p>
@@ -547,4 +736,4 @@ async function vSettings(v) {
   document.querySelectorAll("[data-savesec]").forEach(b => b.onclick = async () => { const k = b.dataset.savesec; await api("/api/secrets", { method: "POST", body: { name: k, value: $(`[data-secret="${k}"]`).value } }); toast("Ключ сохранён"); render(); });
 }
 
-(async () => { META = await api("/api/meta"); render(); pollJobs(); setInterval(pollJobs, 4000); })();
+(async () => { META = await api("/api/meta"); render(); liveTick(); setInterval(liveTick, 5000); })();

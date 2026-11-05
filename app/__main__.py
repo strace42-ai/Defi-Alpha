@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import argparse
+import atexit
+import json
+import os
+import sys
 import logging
 import logging.handlers
 import threading
 import webbrowser
 
-from . import config, db
+from . import __version__, config, db
+from .util import now_iso
 
 
 def setup_logging() -> None:
@@ -36,35 +41,91 @@ def _free_port(start: int) -> int:
     return start
 
 
+class InstanceLock:
+    """Один экземпляр фонового сборщика на папку данных: файл-блокировка ОС (снимается автоматически при завершении)."""
+
+    def __init__(self, path):
+        self.path = path
+        self.fh = None
+
+    def acquire(self) -> bool:
+        self.fh = open(self.path, "a+")
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                self.fh.seek(0)
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.fh.close()
+            self.fh = None
+            return False
+        return True
+
+    def info(self) -> dict:
+        try:
+            return json.loads((config.DATA_DIR / "instance.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="DeFi Alpha Scanner")
     ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--no-browser", action="store_true")
-    ap.add_argument("--scan", action="store_true", help="поставить сканирование в очередь при старте")
+    ap.add_argument("--scan", action="store_true", help="поставить обнаружение по всем сетям в очередь при старте")
+    ap.add_argument("--rollback-migration", action="store_true", help="восстановить базу из копии перед последней миграцией")
     args = ap.parse_args()
     setup_logging()
-    db.init_db()
-    # прерванные задания прошлого запуска помечаются, данные и позиции сканирования сохраняются
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lock = InstanceLock(config.DATA_DIR / "scanner.lock")
+    if not lock.acquire():
+        inf = lock.info()
+        url = inf.get("url") or "http://127.0.0.1:8765/"
+        print(f"\n  DeFi Alpha Scanner уже запущен ({url}). Второй экземпляр сборщика не запускается — открываю интерфейс.\n")
+        if not args.no_browser:
+            webbrowser.open(url)
+        return
+    if args.rollback_migration:
+        p = db.rollback_migration()
+        print(f"Восстановлено из {p}" if p else "Копий перед миграцией не найдено")
+        return
+    info = db.init_db()
+    if info.get("backup"):
+        print(f"  Схема базы обновлена v{info['from_version']} → v{info['to_version']}; резервная копия: {info['backup']}")
+    # прерванные задания прошлого запуска помечаются; позиции сканирования сохранены в scan_progress
     db.ex("UPDATE jobs SET status='interrupted', finished_at=started_at WHERE status IN ('running','queued')")
     from . import research
     from .jobs import runner
+    s = config.load_settings()  # здесь же — перенос настроек v1 → v2 (включение мониторинга)
     seeded = research.load_seed()
-    # добавленные вручную/исследовательские токены без анализа (в т.ч. после прерывания) — в очередь
     seeded = list(dict.fromkeys(seeded + [r["uid"] for r in db.q(
         "SELECT uid FROM tokens WHERE discovery_source='manual' AND last_deep_at IS NULL")]))
     for uid in seeded:
-        runner.submit("token", priority=5, uid=uid)  # фоном, после пользовательских заданий
+        runner.submit("token", priority=5, uid=uid)
     if args.scan:
-        runner.submit("scan")
-    runner.start()  # после постановки в очередь: приоритеты применяются с первого задания
-    port = _free_port(args.port or int(config.load_settings().get("ui_port", 8765)))
+        runner.submit("scan", priority=0)
+    if info.get("from_version") == 1:
+        runner.submit("reevaluate", priority=1)  # пересчёт всех проектов по пяти фильтрам после миграции
+    runner.start(scheduler=True)  # планировщик сам проверит устаревание данных и поставит обновления
+    port = _free_port(args.port or int(s.get("ui_port", 8765)))
     url = f"http://127.0.0.1:{port}/"
-    print(f"\n  DeFi Alpha Scanner запущен: {url}\n  Данные: {config.DATA_DIR}\n  Для остановки закройте это окно (Ctrl+C).\n")
+    (config.DATA_DIR / "instance.json").write_text(json.dumps({"url": url, "pid": os.getpid(), "started_at": now_iso()}), encoding="utf-8")
+
+    def shutdown(*_):
+        runner.stop()
+        db.checkpoint()  # сохранение базы (WAL → основной файл) перед завершением
+    atexit.register(shutdown)
+    print(f"\n  DeFi Alpha Scanner {__version__}: {url}\n  Фоновый мониторинг: {'включён' if s.get('scheduler_enabled') else 'на паузе'}"
+          f"\n  Данные: {config.DATA_DIR}\n  Мониторинг работает, пока открыто это окно и компьютер не спит.\n")
     if not args.no_browser:
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     import uvicorn
     from .api import app
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    shutdown()
 
 
 if __name__ == "__main__":

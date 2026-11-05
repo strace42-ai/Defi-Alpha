@@ -6,6 +6,7 @@ deep_enrich  — по одному кандидату (дорого): все п�
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Callable
 
 from . import config, db, market
@@ -19,13 +20,48 @@ log = logging.getLogger("das.enrich")
 Progress = Callable[[str], None]
 
 
-def get_facts(uid: str) -> dict:
+_facts_lock = threading.RLock()
+
+
+class Facts(dict):
+    """Сводка фактов с памятью исходного состояния: при сохранении записываются только изменённые ключи.
+    Защищает от потери данных, когда несколько очередей (котировки, ончейн, CoinGecko…) обновляют токен одновременно."""
+    __slots__ = ("_orig",)
+
+
+def get_facts(uid: str) -> Facts:
     r = db.q1("SELECT facts FROM tokens WHERE uid=?", (uid,))
-    return loads(r["facts"], {}) if r else {}
+    f = Facts(loads(r["facts"], {}) if r else {})
+    f._orig = {k: dumps(v) for k, v in f.items()}
+    return f
+
+
+def merge_facts(uid: str, facts: dict) -> dict:
+    """Слить изменения caller'а с актуальной версией в БД (вызывать под _facts_lock)."""
+    orig = getattr(facts, "_orig", None)
+    r = db.q1("SELECT facts FROM tokens WHERE uid=?", (uid,))
+    cur = loads(r["facts"], {}) if r else {}
+    if orig is None:  # обычный dict: перезаписываются только переданные ключи
+        cur.update(facts)
+        return cur
+    for k, v in facts.items():
+        if orig.get(k) != dumps(v):
+            cur[k] = v
+    for k in orig:
+        if k not in facts:
+            cur.pop(k, None)
+    return cur
 
 
 def save_facts(uid: str, facts: dict, field: str = "last_market_at") -> None:
-    db.ex(f"UPDATE tokens SET facts=?, {field}=?, updated_at=? WHERE uid=?", (dumps(facts), now_iso(), now_iso(), uid))
+    with _facts_lock:
+        merged = merge_facts(uid, facts)
+        if field == "updated_at":
+            db.ex("UPDATE tokens SET facts=?, updated_at=? WHERE uid=?", (dumps(merged), now_iso(), uid))
+        else:
+            db.ex(f"UPDATE tokens SET facts=?, {field}=?, updated_at=? WHERE uid=?", (dumps(merged), now_iso(), now_iso(), uid))
+        if isinstance(facts, Facts):
+            facts._orig = {k: dumps(v) for k, v in merged.items()}
 
 
 def _v(value: Any, source: str, *, at: str | None = None, method: str | None = None, confidence: str = "reported",
@@ -135,7 +171,8 @@ def quick_enrich(chain_key: str, uids: list[str], progress: Progress | None = No
             elif "ds" not in f:
                 f["ds"] = {"note": "DEX Screener не вернул пар для токена", "at": now_iso()}
             db.get_conn().commit()
-            save_facts(u, f)
+            # отметка рынка обновляется только при фактически полученных данных (иначе — признак устаревания)
+            save_facts(u, f, "last_market_at" if (t or ps) else "updated_at")
         if progress:
             progress(f"{chain.name}: рыночные данные {min(i + 30, len(targets))}/{len(targets)}")
     return stats

@@ -66,7 +66,7 @@ def _row(r: dict, fc: dict[str, dict] | None = None) -> dict:
         "first_seen_at": r["first_seen_at"], "discovery_source": r["discovery_source"],
         "first_trade": first_trade, "age_days": age_days,
         "age_basis": "первая сделка" if ath.get("first_trade_at") else ("самый ранний пул" if f.get("earliest_pool") else "пул (DS)") if first_trade else None,
-        "price": price, "mcap": best["value"] if best else None, "mcap_basis": best["label"] if best else None,
+        "price": price, **_mcap_fields(f, best),
         "fdv_total": (f.get("fdv_total") or {}).get("value") or (f.get("gt") or {}).get("fdv_usd"),
         "fdv_max": (f.get("fdv_max") or {}).get("value"),
         "liquidity": (f.get("pools") or {}).get("liquidity_quality_usd") if f.get("pools") else ((f.get("gt") or {}).get("liquidity_usd") or (f.get("ds") or {}).get("liquidity_usd")),
@@ -78,8 +78,21 @@ def _row(r: dict, fc: dict[str, dict] | None = None) -> dict:
         "score_preliminary": r["score_preliminary"], "score_confirmed": r["score_confirmed"],
         "score_max_verifiable": r["score_max_verifiable"], "confidence": r["confidence"],
         "protocol": r["protocol_slug"], "explorer": ch.explorer_token(r["address_display"] or r["address"]) if ch else None,
-        "watch": bool(r.get("watch")), "last_market_at": r["last_market_at"],
+        "watch": bool(r.get("watch")), "watch_status": r.get("watch_status"), "hidden": bool(r.get("hidden")),
+        "last_market_at": r["last_market_at"], "updated_at": r.get("updated_at"),
+        "price_conflict": bool((f.get("price_check") or {}).get("conflict")),
     }
+
+
+def _mcap_fields(f: dict, best: dict | None) -> dict:
+    m = f.get("mcap") if isinstance(f.get("mcap"), dict) and "points" in f.get("mcap", {}) else None
+    if not m:
+        return {"mcap": best["value"] if best else None, "mcap_basis": best["label"] if best else None, "mcap_type": None,
+                "mcap_low": None, "mcap_high": None, "circ_supply": None, "total_supply": (f.get("total_supply") or {}).get("value"),
+                "mcap_conflict": bool(f.get("mcap_conflict"))}
+    return {"mcap": m.get("value"), "mcap_low": m.get("low"), "mcap_high": m.get("high"), "mcap_type": m.get("type"),
+            "mcap_basis": m.get("reason"), "circ_supply": m.get("circulating_supply"), "total_supply": m.get("total_supply"),
+            "mcap_conflict": bool(m.get("conflicts"))}
 
 
 def _filters_map(uids: list[str]) -> dict[str, dict[str, dict]]:
@@ -93,9 +106,35 @@ def _filters_map(uids: list[str]) -> dict[str, dict[str, dict]]:
     return out
 
 
+MODES = {
+    "default": "Сначала продвинутые уровни",
+    "strongest": "Самые сильные фундаментально",
+    "recent": "Недавно обнаружены",
+    "active_small": "Высокая активность при небольшой капитализации",
+    "warnings": "Наиболее существенные предупреждения",
+    "manual": "Требуют ручной проверки",
+    "mcap_unclear": "MCAP требует уточнения",
+}
+
+
 def _query_tokens(search: str = "", chain: str = "", status: str = "", level: str = "", show_service: bool = False,
-                  only_watch: bool = False, limit: int = 500, offset: int = 0, sort: str = "default", order: str = "desc"):
+                  only_watch: bool = False, limit: int = 500, offset: int = 0, sort: str = "default", order: str = "desc",
+                  mode: str = "default", only_hidden: bool = False, exclude_hidden: bool = False, uids: list[str] | None = None):
     where, p = ["1=1"], []
+    if uids is not None:
+        if not uids:
+            return 0, []
+        where.append(f"t.uid IN ({','.join('?' * len(uids))})"); p += uids
+    if only_hidden:
+        where.append("h.token_uid IS NOT NULL")
+    if exclude_hidden:
+        where.append("h.token_uid IS NULL")
+    if mode == "manual":
+        where.append("t.status='MANUAL REVIEW'")
+    if mode == "mcap_unclear":
+        where.append("t.level IN ('B','C','D','E') AND (json_extract(t.facts,'$.mcap.type') IS NULL OR json_extract(t.facts,'$.mcap.type')!='CONFIRMED') "
+                     "AND EXISTS (SELECT 1 FROM filter_current fc WHERE fc.token_uid=t.uid AND fc.filter_key='mcap' AND fc.status!='PASS' OR "
+                     "(fc.token_uid=t.uid AND fc.filter_key='mcap' AND fc.confidence='preliminary'))")
     if not show_service:
         where.append("t.asset_class='token'")
     if chain:
@@ -111,13 +150,28 @@ def _query_tokens(search: str = "", chain: str = "", status: str = "", level: st
         where.append("w.token_uid IS NOT NULL")
     cols = {"first_seen_at", "symbol", "chain", "level", "status", "score_preliminary", "last_market_at"}
     order = "ASC" if order.lower() == "asc" else "DESC"
+    mode_sql = {
+        "strongest": "CASE t.status WHEN 'FAIL' THEN 1 ELSE 0 END, t.score_preliminary DESC NULLS LAST",
+        "recent": "t.first_seen_at DESC",
+        "active_small": "CASE WHEN COALESCE(json_extract(t.facts,'$.mcap.value'), json_extract(t.facts,'$.mcap.high')) <= 5000000 THEN 0 ELSE 1 END, "
+                        "(COALESCE(json_extract(t.facts,'$.ds.volume_h24'),0) * 1.0 / NULLIF(COALESCE(json_extract(t.facts,'$.mcap.value'), "
+                        "json_extract(t.facts,'$.mcap.high')),0)) DESC NULLS LAST",
+        "warnings": "(SELECT COUNT(*) FROM alerts a WHERE a.token_uid=t.uid AND a.acknowledged=0 AND a.severity='high') DESC, t.score_preliminary DESC NULLS LAST",
+        "manual": "t.score_preliminary DESC NULLS LAST",
+        "mcap_unclear": "t.score_preliminary DESC NULLS LAST",
+    }
     if sort in cols:
         order_sql = f"t.{sort} {order} NULLS LAST"
+    elif mode in mode_sql:
+        order_sql = mode_sql[mode]
     else:  # по умолчанию: сначала продвинутые уровни, затем оценка, затем свежие
         order_sql = ("CASE t.status WHEN 'FAIL' THEN 1 ELSE 0 END, t.level DESC, t.score_preliminary DESC NULLS LAST, "
                      "t.last_market_at IS NULL, t.first_seen_at DESC")
-    total = db.q1(f"SELECT COUNT(*) n FROM tokens t LEFT JOIN watchlist w ON w.token_uid=t.uid WHERE {' AND '.join(where)}", p)["n"]
-    rows = db.rows_to_dicts(db.q(f"SELECT t.*, w.token_uid AS watch FROM tokens t LEFT JOIN watchlist w ON w.token_uid=t.uid "
+    joins = ("FROM tokens t LEFT JOIN watchlist w ON w.token_uid=t.uid "
+             "LEFT JOIN hidden_tokens h ON h.token_uid=t.uid AND h.active=1 ")
+    total = db.q1(f"SELECT COUNT(*) n {joins} WHERE {' AND '.join(where)}", p)["n"]
+    rows = db.rows_to_dicts(db.q(f"SELECT t.*, w.token_uid AS watch, w.status AS watch_status, h.token_uid AS hidden, h.hidden_at, "
+                                 f"h.until AS hidden_until, h.reason AS hidden_reason {joins} "
                                  f"WHERE {' AND '.join(where)} ORDER BY {order_sql} LIMIT ? OFFSET ?", p + [limit, offset]))
     fm = _filters_map([r["uid"] for r in rows])
     return total, [_row(r, fm.get(r["uid"])) for r in rows]
@@ -126,6 +180,7 @@ def _query_tokens(search: str = "", chain: str = "", status: str = "", level: st
 @app.get("/api/meta")
 def meta():
     return {"version": __version__, "filters": FILTER_NAMES, "levels": LEVELS, "funding_categories": FUNDING_CATEGORIES,
+            "watch_statuses": WATCH_STATUSES, "modes": MODES,
             "chains": {k: {"name": c.name, "kind": c.kind, "support": c.support} for k, c in CHAINS.items()},
             "jobs": JOB_NAMES, "now_utc": now_iso()}
 
@@ -150,7 +205,10 @@ def dashboard():
         "scheduler_enabled": s.get("scheduler_enabled"),
         "jobs": runner.status(),
         "last_jobs": db.rows_to_dicts(db.q("SELECT * FROM jobs ORDER BY id DESC LIMIT 6")),
-        "top": _query_tokens(level="C,D,E", limit=10, sort="score_preliminary")[1],
+        "top": best()["rows"][:10],
+        "hidden": db.q1("SELECT COUNT(*) n FROM hidden_tokens WHERE active=1")["n"],
+        "mcap_types": {r["t"] or "нет оценки": r["n"] for r in db.q("SELECT json_extract(facts,'$.mcap.type') t, COUNT(*) n FROM tokens "
+                                                                   "WHERE asset_class='token' GROUP BY t")},
     }
 
 
@@ -174,9 +232,91 @@ def _coverage_summary() -> list[dict]:
 
 @app.get("/api/tokens")
 def tokens(search: str = "", chain: str = "", status: str = "", level: str = "", show_service: bool = False,
-           only_watch: bool = False, limit: int = Query(500, le=5000), offset: int = 0, sort: str = "default", order: str = "desc"):
-    total, rows = _query_tokens(search, chain, status, level, show_service, only_watch, limit, offset, sort, order)
-    return {"total": total, "rows": rows}
+           only_watch: bool = False, limit: int = Query(500, le=5000), offset: int = 0, sort: str = "default", order: str = "desc",
+           mode: str = "default"):
+    total, rows = _query_tokens(search, chain, status, level, show_service, only_watch, limit, offset, sort, order, mode=mode)
+    return {"total": total, "rows": rows, "modes": MODES}
+
+
+@app.get("/api/best")
+def best():
+    """Автоматический рейтинг лучших DeFi-кандидатов (без скрытых пользователем)."""
+    from .pipeline import best_candidates
+    uids = best_candidates(int(config.load_settings().get("top_candidates_n", 30)))
+    _, rows = _query_tokens(uids=uids, limit=len(uids) or 1, show_service=True)
+    order = {u: i for i, u in enumerate(uids)}
+    rows.sort(key=lambda r: order.get(r["uid"], 999))
+    return {"total": len(rows), "rows": rows}
+
+
+@app.get("/api/hidden")
+def hidden_list():
+    _, rows = _query_tokens(only_hidden=True, limit=2000, show_service=True, sort="first_seen_at")
+    info = {r["token_uid"]: dict(r) for r in db.q("SELECT * FROM hidden_tokens WHERE active=1")}
+    for r in rows:
+        h = info.get(r["uid"]) or {}
+        r.update({"hidden_at": h.get("hidden_at"), "hidden_until": h.get("until"), "hidden_reason": h.get("reason")})
+    return {"total": len(rows), "rows": rows}
+
+
+@app.post("/api/hide/{uid:path}")
+def hide(uid: str, payload: dict = Body(default={})):
+    """Скрыть из лучших кандидатов (не удаление: запись, история и проверки сохраняются)."""
+    if not db.q1("SELECT 1 FROM tokens WHERE uid=?", (uid,)):
+        raise HTTPException(404)
+    days = (payload or {}).get("days")
+    until = None
+    if days:
+        from .util import iso, now_utc as _n
+        until = iso(_n() + _dt.timedelta(days=int(days)))
+    db.ex("INSERT OR REPLACE INTO hidden_tokens(token_uid,hidden_at,until,reason,active) VALUES(?,?,?,?,1)",
+          (uid, now_iso(), until, (payload or {}).get("reason")))
+    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)",
+          (uid, "hide", dumps({"reason": (payload or {}).get("reason"), "until": until}), now_iso()))
+    return {"ok": True, "until": until}
+
+
+@app.post("/api/unhide/{uid:path}")
+def unhide(uid: str):
+    db.ex("UPDATE hidden_tokens SET active=0 WHERE token_uid=?", (uid,))
+    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "restore", None, now_iso()))
+    return {"ok": True}
+
+
+@app.post("/api/focus/{uid:path}")
+def focus(uid: str):
+    """Открытая карточка: повышенный приоритет обновления (ограничен по времени, не расходует весь бюджет API)."""
+    from . import refresh
+    refresh.set_focus(uid)
+    return {"ok": True}
+
+
+@app.post("/api/monitoring")
+def monitoring(payload: dict = Body(...)):
+    s = config.load_settings()
+    s["scheduler_enabled"] = bool(payload.get("enabled"))
+    config.save_settings(s)
+    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(NULL,?,NULL,?)",
+          ("monitoring_on" if s["scheduler_enabled"] else "monitoring_off", now_iso()))
+    return {"enabled": s["scheduler_enabled"]}
+
+
+@app.get("/api/live")
+def live(since: str = "", uid: str = ""):
+    """Лёгкий опрос для живого интерфейса: что изменилось с момента since (UTC ISO)."""
+    since = since or "1970-01-01T00:00:00Z"
+    out = {"now": now_iso(), "jobs": runner.status(),
+           "tokens_changed": db.q1("SELECT COUNT(*) n FROM tokens WHERE updated_at>?", (since,))["n"],
+           "new_tokens": db.q1("SELECT COUNT(*) n FROM tokens WHERE first_seen_at>? AND asset_class='token'", (since,))["n"],
+           "new_alerts": db.rows_to_dicts(db.q("SELECT a.id,a.title,a.severity,a.token_uid,a.created_at FROM alerts a WHERE a.created_at>? "
+                                               "ORDER BY a.id DESC LIMIT 10", (since,))),
+           "alerts_open": db.q1("SELECT COUNT(*) n FROM alerts WHERE acknowledged=0")["n"],
+           "sources": db.rows_to_dicts(db.q("SELECT source,last_success_at,last_error_at,last_error FROM source_status"))}
+    if uid:
+        t = db.q1("SELECT updated_at,last_market_at FROM tokens WHERE uid=?", (uid,))
+        out["token_updated_at"] = t["updated_at"] if t else None
+        out["token_events"] = db.q1("SELECT COUNT(*) n FROM supply_events WHERE token_uid=?", (uid,))["n"]
+    return out
 
 
 @app.get("/api/review")
@@ -190,7 +330,7 @@ def review():
 
 @app.get("/api/token/{uid:path}")
 def token(uid: str):
-    r = db.q1("SELECT t.*, w.token_uid AS watch, w.note AS watch_note FROM tokens t LEFT JOIN watchlist w ON w.token_uid=t.uid WHERE t.uid=?", (uid,))
+    r = db.q1("SELECT t.*, w.token_uid AS watch, w.note AS watch_note, w.status AS watch_status FROM tokens t LEFT JOIN watchlist w ON w.token_uid=t.uid WHERE t.uid=?", (uid,))
     if not r:
         raise HTTPException(404, "токен не найден")
     r = dict(r)
@@ -218,7 +358,59 @@ def token(uid: str):
         "series": {m: db.obs_series("token", uid, m) for m in ("price_usd_robust", "liquidity_usd_quality", "total_supply_rpc",
                                                                 "circulating_supply", "holders_count")},
         "explorer_tx": ch.explorer_tx("{tx}"), "explorer_addr": ch.explorer_address("{address}"),
+        "freshness": _freshness(uid, r, f),
+        "hidden": dict(db.q1("SELECT * FROM hidden_tokens WHERE token_uid=? AND active=1", (uid,)) or {}) or None,
+        "user_actions": db.rows_to_dicts(db.q("SELECT * FROM user_actions WHERE token_uid=? ORDER BY id DESC LIMIT 50", (uid,))),
+        "mcap_history": db.rows_to_dicts(db.q("SELECT assessed_at,mcap_type,value,low,high,price,circ_supply,filter_status,method "
+                                              "FROM mcap_assessments WHERE token_uid=? ORDER BY id DESC LIMIT 50", (uid,))),
+        "funding_categories": FUNDING_CATEGORIES,
     }
+
+
+def _freshness(uid: str, r: dict, f: dict) -> list[dict]:
+    """Индикаторы актуальности по группам данных: фактическое время последнего успешного получения, задержка, ошибки."""
+    from . import refresh
+    from .http import source_available
+    st = dict(db.q1("SELECT * FROM refresh_state WHERE token_uid=?", (uid,)) or {})
+    t = refresh.tiers().get(uid, 4)
+    rs = config.load_settings()["refresh_sec"]
+    pend = lambda job, **kw: runner.is_pending(job, **kw)
+    now = _dt.datetime.now(_dt.timezone.utc)
+
+    def item(name, ok_at, kind, source, err=None, src_time=None, updating=False):
+        iv = int((rs.get(kind) or {}).get(str(t), 0))
+        dt_ = parse_iso(ok_at)
+        age = (now - dt_).total_seconds() if dt_ else None
+        avail = source_available(source)[0]
+        if updating:
+            state = "updating"
+        elif not avail or (err and (not dt_ or (age and age > max(iv, 600)))):
+            state = "source_down"
+        elif dt_ is None:
+            state = "none"
+        elif iv and age > iv * 3:
+            state = "stale"
+        elif not iv and age > 86400 * 2:
+            state = "stale"
+        else:
+            state = "fresh"
+        return {"name": name, "ok_at": ok_at, "age_sec": age, "interval_sec": iv, "state": state, "error": err, "source": source,
+                "source_time": src_time}
+    oc = f.get("onchain") or {}
+    p = f.get("protocol") or {}
+    tvl_last = (p.get("tvl_series") or [[None]])[-1][0] if p.get("tvl_series") else None
+    from .util import iso, from_ts
+    return [
+        item("Цена и ликвидность", st.get("last_quote_ok_at") or r.get("last_market_at"), "quote", "dexscreener",
+             st.get("last_quote_error"), updating=any(runner.is_pending("quotes", uids=x) for x in ([[uid]]))),
+        item("Пулы, ATH, свечи", r.get("last_deep_at"), "deep", "geckoterminal", updating=pend("deep", uid=uid)),
+        item("Фундаментал DefiLlama", st.get("last_fund_at") or r.get("last_enriched_at"), "fundamentals", "defillama",
+             src_time=iso(from_ts(tvl_last)) if tvl_last else None, updating=pend("fund", uid=uid)),
+        item("Ончейн mint/burn", r.get("last_onchain_at"), "onchain", f"rpc:{r['chain']}", oc.get("error"),
+             updating=pend("onchain", uid=uid)),
+        item("CoinGecko (circulating)", st.get("last_cg_at") if not (f.get("coingecko") or {}).get("error") else (f.get("coingecko") or {}).get("at"),
+             "coingecko", "coingecko", (f.get("coingecko") or {}).get("error"), updating=pend("cg", uid=uid)),
+    ]
 
 
 @app.post("/api/token/{uid:path}/refresh")
@@ -254,11 +446,12 @@ def add_fact(uid: str, payload: dict = Body(...)):
         raise HTTPException(400, "недопустимый тип факта")
     if key == "funding" and payload.get("category") not in FUNDING_CATEGORIES:
         raise HTTPException(400, "укажите категорию финансирования")
-    if key == "funding" and payload.get("category") == "none_documented" and not payload.get("evidence_url"):
-        raise HTTPException(400, "для «отсутствия VC» обязательна ссылка на доказательство")
-    db.ex("INSERT INTO manual_facts(token_uid,fact_key,value,category,evidence_url,source_type,note,entered_by,entered_at) VALUES(?,?,?,?,?,?,?,?,?)",
+    from .util import fnum
+    db.ex("INSERT INTO manual_facts(token_uid,fact_key,value,category,evidence_url,source_type,note,entered_by,entered_at,amount_usd,valuation_usd) "
+          "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
           (uid, key, payload.get("value"), payload.get("category"), payload.get("evidence_url"), payload.get("source_type") or "user",
-           payload.get("note"), "user", now_iso()))
+           payload.get("note"), "user", now_iso(), fnum(payload.get("amount_usd")), fnum(payload.get("valuation_usd"))))
+    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "add_fact", dumps({"fact_key": key}), now_iso()))
     pipeline.evaluate(uid, old_facts=None)
     return {"ok": True}
 
@@ -310,9 +503,13 @@ def add_label(payload: dict = Body(...)):
     if ck not in CHAINS:
         raise HTTPException(400)
     ch = CHAINS[ck]
-    db.ex("INSERT OR REPLACE INTO address_labels(chain,address,label,kind,source_url,source_type,token_uid) VALUES(?,?,?,?,?,?,?)",
+    circ = payload.get("circulation") if payload.get("circulation") in ("excluded", "included", "uncertain") else None
+    if circ == "excluded" and not (payload.get("circulation_evidence") or payload.get("source_url")):
+        raise HTTPException(400, "для исключения из обращения нужна ссылка/описание доказательства блокировки")
+    db.ex("INSERT OR REPLACE INTO address_labels(chain,address,label,kind,source_url,source_type,token_uid,circulation,circulation_evidence) "
+          "VALUES(?,?,?,?,?,?,?,?,?)",
           (ck, normalize_address(ch.kind, payload.get("address") or ""), payload.get("label"), payload.get("kind"),
-           payload.get("source_url"), payload.get("source_type") or "user", payload.get("token_uid")))
+           payload.get("source_url"), payload.get("source_type") or "user", payload.get("token_uid"), circ, payload.get("circulation_evidence")))
     return {"ok": True}
 
 
@@ -323,18 +520,32 @@ def watchlist():
     for r in rows:
         r["watch_note"] = (notes.get(r["uid"]) or {}).get("note")
         r["watch_added"] = (notes.get(r["uid"]) or {}).get("added_at")
+        r["watch_status"] = (notes.get(r["uid"]) or {}).get("status")
     return {"total": total, "rows": rows}
+
+
+WATCH_STATUSES = {"studying": "Изучаю", "watching": "Наблюдаю", "position": "Есть позиция", "questionable": "Гипотеза под вопросом",
+                  "archive": "Архив"}
 
 
 @app.post("/api/watchlist/{uid:path}")
 def watch_add(uid: str, payload: dict = Body(default={})):
-    db.ex("INSERT OR REPLACE INTO watchlist(token_uid,added_at,note) VALUES(?,?,?)", (uid, now_iso(), (payload or {}).get("note")))
+    st = (payload or {}).get("status") or "watching"
+    if st not in WATCH_STATUSES:
+        raise HTTPException(400, "неизвестный статус")
+    ex = db.q1("SELECT * FROM watchlist WHERE token_uid=?", (uid,))
+    if ex:
+        db.ex("UPDATE watchlist SET status=?, note=COALESCE(?, note) WHERE token_uid=?", (st, (payload or {}).get("note"), uid))
+    else:
+        db.ex("INSERT INTO watchlist(token_uid,added_at,note,status) VALUES(?,?,?,?)", (uid, now_iso(), (payload or {}).get("note"), st))
+    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "watch", st, now_iso()))
     return {"ok": True}
 
 
 @app.delete("/api/watchlist/{uid:path}")
 def watch_del(uid: str):
     db.ex("DELETE FROM watchlist WHERE token_uid=?", (uid,))
+    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "unwatch", None, now_iso()))
     return {"ok": True}
 
 
@@ -401,7 +612,8 @@ LIMITATIONS = [
     "DEX Screener не имеет публичного списка всех новых пар; профили/бусты — промо и выключены по умолчанию.",
     "Публичные RPC без архивного состояния: исторический totalSupply восстанавливается из событий Transfer.",
     "Blockscout API (Robinhood) закрыт Cloudflare-проверкой из облачной сети — обход не выполняется; верификация кода = UNKNOWN.",
-    "VC-статус автоматически устанавливается только как FAIL (DefiLlama raises); PASS — только ручной записью с доказательством.",
+    "Финансирование (VC) — аналитика рисков, не фильтр; данные о раундах — из DefiLlama raises и ручных записей.",
+    "CoinGecko без ключа: ~5 запросов/мин — circulating supply запрашивается только для приоритетных токенов.",
     "Даты в интерфейсе показываются в локальной зоне браузера; в базе — UTC.",
 ]
 
@@ -416,7 +628,7 @@ def scan(payload: dict = Body(default={})):
 
 @app.post("/api/jobs/{job}")
 def run_job(job: str):
-    if job not in ("refresh", "fundamentals", "backup", "reevaluate", "weekly"):
+    if job not in ("refresh", "fundamentals", "backup", "reevaluate", "weekly", "scan"):
         raise HTTPException(400)
     return {"job_id": runner.submit(job)}
 

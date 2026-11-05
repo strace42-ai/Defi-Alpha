@@ -33,8 +33,10 @@ def load_seed(force: bool = False) -> list[str]:
                       "VALUES(?,?,?,?,?,?,?,?,?)", (uid, f["fact_key"], f.get("value"), f.get("category"), f.get("evidence_url"),
                                                      f.get("source_type"), f.get("note"), "research_seed", now_iso()))
         for lb in t.get("labels", []):
-            db.ex("INSERT OR REPLACE INTO address_labels(chain,address,label,kind,source_url,source_type,token_uid) VALUES(?,?,?,?,?,?,?)",
-                  (ch.key, normalize_address(ch.kind, lb["address"]), lb["label"], lb["kind"], lb.get("source_url"), lb.get("source_type"), uid))
+            db.ex("INSERT OR REPLACE INTO address_labels(chain,address,label,kind,source_url,source_type,token_uid,circulation,circulation_evidence) "
+                  "VALUES(?,?,?,?,?,?,?,?,?)",
+                  (ch.key, normalize_address(ch.kind, lb["address"]), lb["label"], lb["kind"], lb.get("source_url"), lb.get("source_type"), uid,
+                   lb.get("circulation"), lb.get("circulation_evidence")))
         for tv in t.get("tokenomics", []):
             if not db.q1("SELECT 1 FROM tokenomics_versions WHERE token_uid=? AND version_label=?", (uid, tv["version_label"])):
                 db.ex("INSERT INTO tokenomics_versions(token_uid,version_label,published_at,source_url,source_type,is_current,params,note,entered_at) "

@@ -55,6 +55,37 @@ _cache_lock = threading.Lock()
 _client: httpx.Client | None = None
 # Счётчики вызовов за текущий процесс (для страницы «Источники данных»)
 budget: dict[str, dict[str, int]] = {}
+# Circuit breaker: после N подряд окончательных отказов источник пропускается на растущий интервал (до 15 мин)
+_breaker: dict[str, dict] = {}
+_breaker_lock = threading.Lock()
+BREAKER_FAILS = 3
+
+
+def source_available(source: str) -> tuple[bool, float]:
+    """(доступен, секунд до следующей попытки)."""
+    with _breaker_lock:
+        b = _breaker.get(source)
+        if not b or b["fails"] < BREAKER_FAILS:
+            return True, 0.0
+        left = b["until"] - time.monotonic()
+        return (left <= 0), max(0.0, left)
+
+
+def _breaker_result(source: str, ok: bool) -> None:
+    with _breaker_lock:
+        b = _breaker.setdefault(source, {"fails": 0, "until": 0.0})
+        if ok:
+            b["fails"], b["until"] = 0, 0.0
+            return
+        b["fails"] += 1
+        if b["fails"] >= BREAKER_FAILS:
+            b["until"] = time.monotonic() + min(900.0, 30.0 * 2 ** (b["fails"] - BREAKER_FAILS))
+
+
+def breaker_status() -> dict:
+    with _breaker_lock:
+        now = time.monotonic()
+        return {k: {"fails": v["fails"], "paused_sec": max(0, round(v["until"] - now))} for k, v in _breaker.items() if v["fails"]}
 
 
 def client() -> httpx.Client:
@@ -73,6 +104,8 @@ def set_client(c: httpx.Client | None) -> None:
 
 def reset_limiters() -> None:
     _limiters.clear()
+    with _breaker_lock:
+        _breaker.clear()
     with _cache_lock:
         _cache.clear()
 
@@ -118,6 +151,20 @@ def request_json(source: str, method: str, url: str, *, params: dict | None = No
             hit = _cache.get(key)
             if hit and hit[0] > time.monotonic():
                 return hit[1], None
+    ok_, left = source_available(source.split(":")[0] if source.startswith("rpc") is False else source)
+    if not ok_:
+        raise SourceError(source, "circuit_open", f"источник временно приостановлен после серии ошибок, повтор через {left:.0f} c")
+    try:
+        res = _request(source, method, url, params, json_body, headers, retries, cache_ttl, save_raw, allow_404, key)
+    except SourceError as e:
+        if e.kind in ("unavailable", "blocked"):
+            _breaker_result(source.split(":")[0] if not source.startswith("rpc") else source, False)
+        raise
+    _breaker_result(source.split(":")[0] if not source.startswith("rpc") else source, True)
+    return res
+
+
+def _request(source, method, url, params, json_body, headers, retries, cache_ttl, save_raw, allow_404, key):
     lim = limiter(source)
     last_err = "unknown"
     for attempt in range(retries + 1):

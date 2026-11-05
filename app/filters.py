@@ -13,11 +13,11 @@ from .util import days_between, fmt_usd, parse_iso
 
 PASS, FAIL, UNKNOWN = "PASS", "FAIL", "UNKNOWN"
 
+# v2: пять обязательных фильтров. Финансирование (VC) — аналитический показатель риска, НЕ фильтр (см. funding_analysis).
 FILTER_NAMES = {
     "age": "Возраст",
     "mcap": "Капитализация (circulating)",
     "drawdown": "Просадка от ATH",
-    "vc": "Отсутствие VC",
     "utility": "Реальная утилити",
     "ecosystem": "Живая экосистема",
 }
@@ -115,51 +115,60 @@ def f_age(facts: dict, manual: list[dict], now: _dt.datetime, max_days: float) -
 
 
 # ---------------------------------------------------------------- 2. MCAP
-def f_mcap(facts: dict, limit: float) -> dict:
-    cands = facts.get("mcap_candidates") or []
-    fdv_total = (facts.get("fdv_total") or {}).get("value")
-    fdv_max = (facts.get("fdv_max") or {}).get("value")
-    ev = [{"label": c["label"], "value": c["value"], "source": c["source"], "url": c.get("url"),
-           "confidence": c["confidence"]} for c in cands]
-    if fdv_total is not None:
-        ev.append({"label": "FDV по totalSupply", "value": fdv_total, "source": (facts.get("fdv_total") or {}).get("supply_source")})
-    if fdv_max is not None:
-        ev.append({"label": "FDV по max supply", "value": fdv_max, "source": (facts.get("fdv_max") or {}).get("supply_source")})
-    vals = {"limit": limit, "fdv_total": fdv_total, "fdv_max": fdv_max}
-    confirmed = [c for c in cands if c["confidence"] == "confirmed"]
-    reported = [c for c in cands if c["confidence"] == "reported"]
-    # учитываются ВСЕ пригодные источники: подтверждённый источник НЕ перекрывает противоречащий ему вторичный
-    usable = confirmed + reported
-    if usable:
-        vs = [c["value"] for c in usable]
-        lo, hi = min(vs), max(vs)
-        below = [c for c in usable if c["value"] <= limit]
-        above = [c for c in usable if c["value"] > limit]
-        vals.update({"mcap_low": lo, "mcap_high": hi, "sources_below": len(below), "sources_above": len(above)})
-        conf = "confirmed" if confirmed else "preliminary"
-        multi = len(usable) > 1
-        if not above:
-            return R("mcap", PASS, f"Circulating MCAP {fmt_usd(lo)}–{fmt_usd(hi)} ≤ {fmt_usd(limit)}"
-                     + (f" (все источники ниже лимита: {len(usable)})" if multi else ""),
-                     confidence=conf, evidence=ev, values=vals)
-        if not below:
-            return R("mcap", FAIL, f"Circulating MCAP {fmt_usd(lo)}–{fmt_usd(hi)} > {fmt_usd(limit)}"
-                     + (f" (все источники выше лимита: {len(usable)})" if multi else ""),
-                     confidence=conf, evidence=ev, values=vals)
-        lab = lambda cs: ", ".join(f"{c['label']} {fmt_usd(c['value'])} [{c['confidence']}]" for c in cs)
-        return R("mcap", UNKNOWN, f"Источники по разные стороны лимита {fmt_usd(limit)}: ниже — {lab(below)}; "
-                 f"выше — {lab(above)}", evidence=ev, values=vals,
-                 needs=["Сверить circulating supply и цену по первоисточникам; выяснить причину расхождения"])
-    # нет данных о circulating: FDV(totalSupply) — верхняя граница circulating MCAP на этой сети
-    if fdv_total is not None and fdv_total <= limit:
-        return R("mcap", PASS, f"Circulating неизвестен, но FDV по totalSupply {fmt_usd(fdv_total)} ≤ {fmt_usd(limit)} "
-                 "⇒ MCAP тоже ниже лимита (circulating ≤ totalSupply). ПРЕДВАРИТЕЛЬНО: для мультичейн-токенов не применимо",
-                 confidence="preliminary", evidence=ev, values=vals, needs=["Установить circulating supply"])
-    if fdv_total is not None:
-        return R("mcap", UNKNOWN, f"Circulating supply не установлен; FDV {fmt_usd(fdv_total)} > лимита, "
-                 "но MCAP НЕ приравнивается к FDV", evidence=ev, values=vals,
-                 needs=["Найти circulating supply (официальный эндпоинт, документация, вестинг)"])
-    return R("mcap", UNKNOWN, "Нет данных о цене/предложении", evidence=ev, values=vals, needs=["Получить цену и supply"])
+def f_mcap(facts: dict, limit: float, manual: list[dict] | None = None) -> dict:
+    """Решение по оценке MCAP Intelligence Engine (app/mcap.py)."""
+    from . import mcap as M
+    a = facts.get("mcap") if isinstance(facts.get("mcap"), dict) and "points" in facts.get("mcap", {}) else M.assess(facts, manual)
+    status, conf, reason, needs = M.filter_decision(a, limit)
+    ev = []
+    for p in a["points"]:
+        ev.append({"label": f"{p['kind']}: {p['formula']}", "value": p["mcap"], "source": p["source"], "url": p.get("url"),
+                   "confidence": p["confidence"], "at": p.get("at"), "note": p.get("note")})
+    for u in a["upper_bounds"]:
+        ev.append({"label": f"верхняя граница ({u['source']}): {u['formula']}", "value": u["mcap"], "note": u["note"]})
+    for c in a["conflicts"]:
+        ev.append({"label": f"КОНФЛИКТ ({c['kind']})", "value": f"{c.get('spread_pct') or 0:.0f}%", "note": c.get("note") or ""})
+    vals = {"limit": limit, "mcap_type": a["type"], "value": a["value"], "low": a["low"], "high": a["high"],
+            "issued_value": a["issued_value"], "fdv_total": a["issued_value"], "fdv_max": (facts.get("fdv_max") or {}).get("value"),
+            "mcap_low": a["low"], "mcap_high": a["high"]}
+    return R("mcap", status, reason, confidence=conf, evidence=ev, values=vals, needs=needs)
+
+
+def funding_analysis(facts: dict, manual: list[dict], mcap_value: float | None) -> dict:
+    """Финансирование — аналитический показатель риска (не фильтр): раунды, оценки, аллокации, разлоки, давление продаж."""
+    rounds = []
+    for m in manual:
+        if m.get("fact_key") != "funding":
+            continue
+        rounds.append({"category": m.get("category"), "category_name": FUNDING_CATEGORIES.get(m.get("category"), m.get("category")),
+                       "value": m.get("value"), "amount_usd": m.get("amount_usd"), "valuation_usd": m.get("valuation_usd"),
+                       "source": m.get("source_type"), "url": m.get("evidence_url"), "note": m.get("note")})
+    for r in ((facts.get("protocol") or {}).get("raises")) or []:
+        amt = r.get("amount")
+        rounds.append({"category": "vc_fund" if (r.get("leadInvestors") or r.get("otherInvestors")) else "unknown",
+                       "category_name": f"Раунд {r.get('round') or ''} (DefiLlama)",
+                       "value": ", ".join((r.get("leadInvestors") or []) + (r.get("otherInvestors") or [])),
+                       "amount_usd": float(amt) * 1e6 if amt else None, "valuation_usd": (float(r["valuation"]) * 1e6) if r.get("valuation") else None,
+                       "source": "defillama", "url": r.get("source"), "date": r.get("date")})
+    raised = sum(r["amount_usd"] or 0 for r in rounds if r["category"] in ("vc_fund", "angel", "strategic"))
+    tn_unlocks = []
+    from .enrich import current_tokenomics  # noqa: F401  (параметры токеномики приходят через facts)
+    for u in (facts.get("tokenomics_unlocks") or []):
+        tn_unlocks.append(u)
+    risks = []
+    if raised and mcap_value:
+        ratio = raised / mcap_value
+        if ratio >= 1:
+            risks.append(f"Привлечено ${raised:,.0f} при MCAP ${mcap_value:,.0f} ({ratio:.1f}×): инвесторы могут быть в убытке "
+                         "или иметь стимул фиксировать прибыль — серьёзный фактор давления продаж")
+        elif ratio >= 0.3:
+            risks.append(f"Привлечено ${raised:,.0f} — {ratio*100:.0f}% от MCAP: заметное потенциальное давление продаж при разлоках")
+    inv_unlocks = [u for u in tn_unlocks if "invest" in str(u.get("category") or u.get("note") or "").lower()]
+    if inv_unlocks:
+        risks.append(f"Запланированы разлоки инвесторов: {len(inv_unlocks)}")
+    status = "no_data" if not rounds else ("vc_present" if any(r["category"] == "vc_fund" for r in rounds) else "non_vc_funding")
+    return {"status": status, "rounds": rounds, "raised_usd": raised or None, "risks": risks, "investor_unlocks": inv_unlocks,
+            "note": "Финансирование не исключает проект: это аналитика рисков. Отсутствие данных ≠ отсутствие VC."}
 
 
 # ---------------------------------------------------------------- 3. Просадка
@@ -194,37 +203,6 @@ def f_drawdown(facts: dict, max_dd: float) -> dict:
     return R("drawdown", PASS, f"Просадка {dd:.1f}% ≤ {max_dd:.0f}%." + warn,
              confidence="confirmed" if complete and not facts.get("ath_pool_quality_warning") else "preliminary",
              evidence=ev, values=vals, needs=[] if complete else ["Проверить ранние пулы и ATH вручную"])
-
-
-# ---------------------------------------------------------------- 4. VC
-def f_vc(facts: dict, manual: list[dict], fail_cats: list[str], warn_cats: list[str]) -> dict:
-    funding = [m for m in manual if m["fact_key"] == "funding"]
-    ev = [{"label": FUNDING_CATEGORIES.get(m.get("category"), m.get("category")), "value": m.get("value"),
-           "source": m.get("source_type"), "url": m.get("evidence_url"), "note": m.get("note")} for m in funding]
-    raises = ((facts.get("protocol") or {}).get("raises")) or []
-    for r in raises:
-        ev.append({"label": "Раунд в DefiLlama", "value": f"{r.get('round') or ''} {r.get('amount') or ''} млн$; "
-                   f"инвесторы: {', '.join((r.get('leadInvestors') or []) + (r.get('otherInvestors') or []))}",
-                   "source": "defillama", "url": r.get("source")})
-    vc = [m for m in funding if m.get("category") in fail_cats]
-    if vc or any((r.get("leadInvestors") or r.get("otherInvestors")) for r in raises):
-        return R("vc", FAIL, "Подтверждено венчурное финансирование" + (" (DefiLlama raises)" if raises else ""),
-                 confidence="confirmed", evidence=ev)
-    warns = [m for m in funding if m.get("category") in warn_cats]
-    none_doc = [m for m in funding if m.get("category") == "none_documented" and m.get("evidence_url")]
-    if none_doc:
-        msg = "Отсутствие VC подтверждено документально: " + "; ".join(m.get("note") or m.get("evidence_url") for m in none_doc)
-        if warns:
-            msg += ". Есть не-VC финансирование: " + ", ".join(FUNDING_CATEGORIES[m["category"]] for m in warns)
-        return R("vc", PASS, msg, confidence="confirmed", evidence=ev)
-    needs = ["Проверить документацию, раздел токеномики/аллокаций, объявления команды",
-             "Внести вывод с доказательством (ссылкой) в карточке проекта"]
-    note = "Отсутствие новостей о раундах НЕ доказывает отсутствие VC."
-    if not raises and facts.get("protocol"):
-        note += " DefiLlama raises пуст — это не доказательство."
-    if warns:
-        note += " Найдено: " + ", ".join(FUNDING_CATEGORIES[m["category"]] for m in warns) + " (не приравнивается к VC)."
-    return R("vc", UNKNOWN, "Недостаточно документальных доказательств. " + note, evidence=ev, needs=needs)
 
 
 # ---------------------------------------------------------------- 5. Утилити
@@ -349,9 +327,8 @@ def evaluate_all(facts: dict, manual: list[dict], health: dict | None, settings:
     fs = settings["filters"]
     return {
         "age": f_age(facts, manual, now, float(fs["max_age_days"])),
-        "mcap": f_mcap(facts, float(fs["max_circ_mcap_usd"])),
+        "mcap": f_mcap(facts, float(fs["max_circ_mcap_usd"]), manual),
         "drawdown": f_drawdown(facts, float(fs["max_drawdown_pct"])),
-        "vc": f_vc(facts, manual, fs["vc_fail_categories"], fs["vc_warn_categories"]),
         "utility": f_utility(facts, manual, asset_class),
         "ecosystem": f_ecosystem(health, fs),
     }

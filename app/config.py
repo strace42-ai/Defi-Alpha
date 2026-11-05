@@ -48,7 +48,20 @@ DEFAULTS: dict[str, Any] = {
         "weekly_snapshot": 10080,
         "backup": 1440,
     },
-    "scheduler_enabled": False,  # фоновый сбор включается пользователем
+    "settings_version": 2,
+    "scheduler_enabled": True,   # v2: фоновый мониторинг включён по умолчанию (можно поставить на паузу в интерфейсе)
+    "refresh_sec": {             # частота обновления по уровню приоритета (0 = автоматически не обновлять)
+        "quote": {"0": 60, "1": 120, "2": 300, "3": 1800, "4": 21600, "5": 0},
+        "deep": {"0": 900, "1": 1800, "2": 7200, "3": 43200, "4": 0, "5": 0},
+        "onchain": {"0": 300, "1": 900, "2": 3600, "3": 0, "4": 0, "5": 0},
+        "fundamentals": {"0": 3600, "1": 10800, "2": 21600, "3": 86400, "4": 0, "5": 0},
+        "coingecko": {"0": 3600, "1": 10800, "2": 21600, "3": 86400, "4": 0, "5": 0},
+    },
+    "top_candidates_n": 30,
+    "queue_max_per_lane": 300,
+    "task_max_seconds": 90,
+    "reorg_overlap_blocks": 2000,
+    "focus_ttl_sec": 90,
     "chains_enabled": None,      # None → default_enabled из реестра сетей
     "discovery": {
         "max_pages_per_chain": 4,
@@ -62,6 +75,8 @@ DEFAULTS: dict[str, Any] = {
         "defillama": 60,
         "rpc": 60,
         "project": 20,
+        "coingecko": 4,      # публичный API без ключа: ~5/мин, при 429 — пауза
+        "llama_coins": 30,
     },
     "alerts": {
         "tvl_outperform_pp": 15.0,
@@ -104,6 +119,17 @@ def load_settings(force: bool = False) -> dict[str, Any]:
                 user = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 user = {}
+        if user and int(user.get("settings_version", 1)) < 2:
+            # v1 → v2: включить фоновый мониторинг один раз (дальше пользователь управляет сам); остальное сохраняется
+            user["settings_version"] = 2
+            user["scheduler_enabled"] = True
+            user.setdefault("_migrations", []).append("v2: scheduler_enabled=true; No-VC больше не фильтр")
+            try:
+                tmp = SETTINGS_PATH.with_suffix(".tmp")
+                tmp.write_text(json.dumps(_merge(DEFAULTS, user), ensure_ascii=False, indent=2), encoding="utf-8")
+                os.replace(tmp, SETTINGS_PATH)
+            except OSError:
+                pass
         _cache = _merge(DEFAULTS, user)
         return copy.deepcopy(_cache)
 

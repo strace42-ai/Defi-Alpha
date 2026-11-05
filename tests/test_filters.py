@@ -103,27 +103,17 @@ def test_insufficient_ath_history_is_preliminary():
     assert F.f_drawdown(f, 86)["status"] == "FAIL"
 
 
-def test_vc_known_fails_unknown_stays_unknown():
-    assert F.f_vc({}, [{"fact_key": "funding", "category": "vc_fund", "value": "Seed $3M"}], ["vc_fund"], ["angel"])["status"] == "FAIL"
-    r = F.f_vc({"protocol": {"raises": []}}, [], ["vc_fund"], ["angel"])
-    assert r["status"] == "UNKNOWN" and "НЕ доказывает" in r["reason"]
+def test_vc_is_not_a_filter_anymore():
+    """v2: финансирование не входит в обязательные фильтры."""
+    assert "vc" not in F.FILTER_NAMES and len(F.FILTER_NAMES) == 5
 
 
-def test_vc_angel_and_grant_not_equal_vc():
-    m = [{"fact_key": "funding", "category": "angel", "value": "angel"}, {"fact_key": "funding", "category": "grant", "value": "grant"}]
-    assert F.f_vc({}, m, ["vc_fund"], ["angel"])["status"] == "UNKNOWN"
-
-
-def test_vc_pass_requires_documented_evidence():
-    m = [{"fact_key": "funding", "category": "none_documented", "value": "no VC", "evidence_url": "https://docs.example/allocations"}]
-    assert F.f_vc({}, m, ["vc_fund"], [])["status"] == "PASS"
-    m2 = [{"fact_key": "funding", "category": "none_documented", "value": "no VC", "evidence_url": None}]
-    assert F.f_vc({}, m2, ["vc_fund"], [])["status"] == "UNKNOWN"
-
-
-def test_vc_defillama_raises_fail():
-    f = {"protocol": {"raises": [{"round": "Seed", "amount": 3, "leadInvestors": ["Fund X"]}]}}
-    assert F.f_vc(f, [], ["vc_fund"], [])["status"] == "FAIL"
+def test_funding_analysis_risk_not_exclusion():
+    m = [{"fact_key": "funding", "category": "vc_fund", "value": "Fund X", "amount_usd": 10e6}]
+    fa = F.funding_analysis({}, m, 2e6)
+    assert fa["status"] == "vc_present" and fa["raised_usd"] == 10e6
+    assert any("давления продаж" in r for r in fa["risks"])  # $10 млн при MCAP $2 млн — серьёзный риск, но не FAIL
+    assert F.funding_analysis({}, [], 2e6)["status"] == "no_data"
 
 
 def test_utility():

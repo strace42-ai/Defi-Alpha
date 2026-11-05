@@ -34,6 +34,8 @@ class Chain:
     default_enabled: bool = False
     quote_assets: dict[str, str] = field(default_factory=dict)  # address(normalized) -> symbol
     notes: str = ""
+    cg_platforms: tuple = ()     # id платформы в CoinGecko (platforms)
+    llama_coins: str | None = None  # префикс сети в coins.llama.fi
 
     def explorer_token(self, address: str) -> str | None:
         return (self.explorer + self.explorer_token_path.format(address=address)) if self.explorer else None
@@ -51,7 +53,7 @@ def _q(d: dict[str, str]) -> dict[str, str]:
 
 CHAINS: dict[str, Chain] = {
     "robinhood": Chain(
-        key="robinhood", name="Robinhood Chain", kind="evm", gt="robinhood", ds="robinhood",
+        key="robinhood", cg_platforms=("robinhood",), llama_coins="robinhood", name="Robinhood Chain", kind="evm", gt="robinhood", ds="robinhood",
         llama="Robinhood Chain", chain_id=4663,
         rpc=["https://rpc.mainnet.chain.robinhood.com"],
         explorer="https://robinhoodchain.blockscout.com",
@@ -64,7 +66,7 @@ CHAINS: dict[str, Chain] = {
               "история предложения восстанавливается из событий Transfer. Blockscout API закрыт Cloudflare-проверкой.",
     ),
     "base": Chain(
-        key="base", name="Base", kind="evm", gt="base", ds="base", llama="Base", chain_id=8453,
+        key="base", cg_platforms=("base",), llama_coins="base", name="Base", kind="evm", gt="base", ds="base", llama="Base", chain_id=8453,
         rpc=["https://mainnet.base.org"], explorer="https://basescan.org",
         max_log_range=2_000, support="supported", default_enabled=True, logs_ok=False,
         logs_note="бесплатные RPC Base не отдают eth_getLogs (mainnet.base.org: 429 «request limit reached», drpc: лимит free-плана)",
@@ -77,7 +79,7 @@ CHAINS: dict[str, Chain] = {
                          "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2": "USDT"}),
     ),
     "eth": Chain(
-        key="eth", name="Ethereum", kind="evm", gt="eth", ds="ethereum", llama="Ethereum", chain_id=1,
+        key="eth", cg_platforms=("ethereum",), llama_coins="ethereum", name="Ethereum", kind="evm", gt="eth", ds="ethereum", llama="Ethereum", chain_id=1,
         rpc=["https://ethereum-rpc.publicnode.com"], explorer="https://etherscan.io",
         max_log_range=10_000, logs_note="publicnode: только недавние блоки (старые — «Archive requests require a personal token»)", support="supported", default_enabled=True,
         quote_assets=_q({ZERO: "ETH", NATIVE_EEEE: "ETH",
@@ -88,7 +90,7 @@ CHAINS: dict[str, Chain] = {
                          "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": "WBTC"}),
     ),
     "arbitrum": Chain(
-        key="arbitrum", name="Arbitrum", kind="evm", gt="arbitrum", ds="arbitrum", llama="Arbitrum",
+        key="arbitrum", cg_platforms=("arbitrum-one",), llama_coins="arbitrum", name="Arbitrum", kind="evm", gt="arbitrum", ds="arbitrum", llama="Arbitrum",
         chain_id=42161, rpc=["https://arb1.arbitrum.io/rpc"], explorer="https://arbiscan.io",
         max_log_range=50_000, support="supported", default_enabled=True,
         quote_assets=_q({ZERO: "ETH", NATIVE_EEEE: "ETH",
@@ -99,7 +101,7 @@ CHAINS: dict[str, Chain] = {
                          "0x912ce59144191c1204e64559fe8253a0e49e6548": "ARB"}),
     ),
     "bsc": Chain(
-        key="bsc", name="BNB Chain", kind="evm", gt="bsc", ds="bsc", llama="BSC", chain_id=56,
+        key="bsc", cg_platforms=("binance-smart-chain",), llama_coins="bsc", name="BNB Chain", kind="evm", gt="bsc", ds="bsc", llama="BSC", chain_id=56,
         rpc=["https://bsc-rpc.publicnode.com"], explorer="https://bscscan.com",
         max_log_range=20_000, logs_note="официальный dataseed отвечает «limit exceeded» на getLogs; используется publicnode", support="supported", default_enabled=True,
         quote_assets=_q({ZERO: "BNB", NATIVE_EEEE: "BNB",
@@ -111,7 +113,7 @@ CHAINS: dict[str, Chain] = {
                          "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c": "BTCB"}),
     ),
     "optimism": Chain(
-        key="optimism", name="Optimism", kind="evm", gt="optimism", ds="optimism", llama="OP Mainnet",
+        key="optimism", cg_platforms=("optimistic-ethereum",), llama_coins="optimism", name="Optimism", kind="evm", gt="optimism", ds="optimism", llama="OP Mainnet",
         chain_id=10, rpc=["https://mainnet.optimism.io"], explorer="https://optimistic.etherscan.io",
         max_log_range=2_000, support="experimental", logs_ok=False, logs_note="getLogs на бесплатном RPC не проверен",
         quote_assets=_q({ZERO: "ETH", NATIVE_EEEE: "ETH",
@@ -123,7 +125,7 @@ CHAINS: dict[str, Chain] = {
         notes="В DefiLlama /v2/chains запись 'Optimism' показывает TVL=0, актуальная — 'OP Mainnet'.",
     ),
     "solana": Chain(
-        key="solana", name="Solana", kind="solana", gt="solana", ds="solana", llama="Solana",
+        key="solana", cg_platforms=("solana",), llama_coins="solana", name="Solana", kind="solana", gt="solana", ds="solana", llama="Solana",
         rpc=["https://api.mainnet-beta.solana.com"], explorer="https://solscan.io",
         explorer_address_path="/account/{address}",
         support="experimental",
@@ -134,7 +136,7 @@ CHAINS: dict[str, Chain] = {
               "GeckoTerminal покрывает лишь минуты — покрытие заведомо частичное.",
     ),
     "hyperevm": Chain(
-        key="hyperevm", name="HyperEVM", kind="evm", gt="hyperevm", ds="hyperevm", llama="Hyperliquid L1",
+        key="hyperevm", cg_platforms=("hyperevm",), llama_coins="hyperliquid", name="HyperEVM", kind="evm", gt="hyperevm", ds="hyperevm", llama="Hyperliquid L1",
         chain_id=999, rpc=["https://rpc.hyperliquid.xyz/evm"], explorer="https://hyperevmscan.io",
         max_log_range=1_000, support="experimental",
         quote_assets=_q({ZERO: "HYPE", NATIVE_EEEE: "HYPE",
@@ -143,7 +145,7 @@ CHAINS: dict[str, Chain] = {
         notes="DefiLlama-сеть 'Hyperliquid L1' включает не только HyperEVM.",
     ),
     "megaeth": Chain(
-        key="megaeth", name="MegaETH", kind="evm", gt="megaeth", ds="megaeth", llama="MegaETH",
+        key="megaeth", cg_platforms=("megaeth",), llama_coins="megaeth", name="MegaETH", kind="evm", gt="megaeth", ds="megaeth", llama="MegaETH",
         chain_id=4326, rpc=["https://mainnet.megaeth.com/rpc"], explorer="https://mega.etherscan.io",
         max_log_range=1_000, support="experimental",
         quote_assets=_q({ZERO: "ETH", NATIVE_EEEE: "ETH",

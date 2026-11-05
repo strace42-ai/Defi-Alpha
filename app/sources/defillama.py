@@ -78,3 +78,14 @@ def chain_fees_overview(chain: str) -> tuple[dict | None, int | None]:
 def chain_stablecoins(chain: str) -> tuple[list[dict], int | None]:
     data, raw = get_json(SRC, f"{STABLES}/stablecoincharts/{quote(chain)}", cache_ttl=3600, allow_404=True)
     return data or [], raw
+
+
+COINS = "https://coins.llama.fi"
+
+
+def coin_prices(keys: list[str]) -> tuple[dict, int | None]:
+    """Текущие цены DefiLlama по 'chain:address' (до ~50 за запрос): price, timestamp, confidence."""
+    if not keys:
+        return {}, None
+    data, raw = get_json("llama_coins", f"{COINS}/prices/current/{','.join(keys[:50])}", save_raw=False)
+    return (data or {}).get("coins") or {}, raw

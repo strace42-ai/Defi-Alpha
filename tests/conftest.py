@@ -26,7 +26,10 @@ def tmp_db(tmp_path, monkeypatch):
     s["rate_limits_per_min"] = {k: 100000 for k in s["rate_limits_per_min"]}
     config.save_settings(s)
     monkeypatch.setattr("time.sleep", lambda *_: None)
+    from app import refresh
+    refresh._focus.clear()
     yield
+    refresh._focus.clear()
     http.reset_limiters()
 
 
