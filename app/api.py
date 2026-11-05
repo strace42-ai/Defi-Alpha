@@ -443,6 +443,13 @@ def monitoring(payload: dict = Body(...)):
     return {"enabled": want}
 
 
+@app.get("/api/coverage")
+def coverage_view():
+    """Покрытие сетей — только сохранённые данные (без сетевых запросов)."""
+    from . import coverage
+    return coverage.chain_report(runner)
+
+
 @app.get("/api/live")
 def live(since: str = "", uid: str = ""):
     """Лёгкий опрос для живого интерфейса: что изменилось с момента since (UTC ISO)."""

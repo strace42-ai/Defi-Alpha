@@ -149,7 +149,7 @@ async function render(soft = false) {
   document.querySelectorAll("#nav a").forEach(a => a.classList.toggle("active", a.dataset.r === r.name || (r.name === "token" && a.dataset.r === "scanner")));
   const v = $("#view");
   try {
-    const fn = { setup: vSetup, dashboard: vDashboard, scanner: vScanner, token: vToken, review: vReview, watchlist: vWatch, hidden: vHidden, tokenomics: vTokenomics, best: vBest, alerts: vAlerts, sources: vSources, settings: vSettings, ...(window.EXTRA_VIEWS || {}) }[r.name] || vDashboard;
+    const fn = { setup: vSetup, dashboard: vDashboard, scanner: vScanner, token: vToken, review: vReview, watchlist: vWatch, hidden: vHidden, tokenomics: vTokenomics, best: vBest, coverage: vCoverage, alerts: vAlerts, sources: vSources, settings: vSettings, ...(window.EXTRA_VIEWS || {}) }[r.name] || vDashboard;
     if (r.name === "settings" && soft) return;  // настройки — только по действию пользователя
     if (!soft || !["scanner", "token"].includes(r.name)) clearCharts();
     await fn(v, r.arg, soft);
@@ -474,6 +474,32 @@ async function vBest(v, arg, soft) {
   $("#bReset").onclick = () => { bestQ = { search: "", chain: "", level: "", status: "", mcap_max: "", start_from: "", sort: "", order: "", offset: 0, limit: 50 }; saveBest(); render(); };
   $("#bPrev").onclick = () => { bestQ.offset = Math.max(0, d.offset - d.limit); saveBest(); render(); };
   $("#bNext").onclick = () => { bestQ.offset = d.offset + d.limit; saveBest(); render(); };
+}
+
+
+/* ---------- Покрытие сетей ---------- */
+async function vCoverage(v) {
+  const d = await api("/api/coverage");
+  const FN = { age: "TGE", mcap: "MCAP", drawdown: "ATH", utility: "DeFi", ecosystem: "Сеть" };
+  const fb = o => Object.entries(o || {}).map(([k, n]) => `${FN[k] || k} ${n}`).join(", ") || "—";
+  v.innerHTML = `<h1>Покрытие сетей</h1>
+  <div class="small muted">Только сохранённые данные, без сетевых запросов. Процент покрытия не вычисляется: общее число токенов и страниц сети неизвестно.
+    Обнаружение: каждые ${num(d.discovery_interval_min)} мин, до ${num(d.max_pages_per_chain)} стр. new_pools на сеть. Глобальная первая страница рейтинга — ${num(d.top_n)}.</div>
+  <div class="card tablewrap"><table><tr><th>Сеть</th><th>Включена</th><th>Ончейн (getLogs)</th><th>Последнее обнаружение</th><th class="num">Проходов</th><th class="num">Пропусков покрытия</th>
+    <th class="num">Токенов</th><th class="num">С котировкой</th><th class="num">Глубокий анализ</th><th class="num">Связь с DeFi</th><th class="num">Уровень B</th><th class="num">C–E</th>
+    <th class="num">В рейтинге</th><th class="num">В первой странице</th><th class="num">PASS</th><th class="num">UNKNOWN / ручн.</th><th class="num">FAIL</th><th>FAIL по фильтрам</th><th class="num">Задач в очереди</th><th>Ошибки RPC</th></tr>
+    ${d.chains.filter(c => c.enabled || c.tokens).map(c => `<tr><td><b>${esc(c.name)}</b> <span class="small muted">${esc(c.support)}</span></td><td>${c.enabled ? "да" : '<span class="muted">нет</span>'}</td>
+      <td class="small" title="${esc(c.onchain_note || "")}">${c.onchain_logs ? "да" : '<span class="sev-medium">нет — уровни D/E недоступны</span>'}</td>
+      <td class="small">${dt(c.last_discovery)}</td><td class="num">${num(c.discovery_runs)}</td><td class="num">${num(c.gaps)}${c.last_gap ? `<div class="small muted">${dt(c.last_gap[0])} — ${dt(c.last_gap[1])}</div>` : ""}</td>
+      <td class="num">${num(c.tokens)}</td><td class="num">${num(c.quoted)}</td><td class="num">${num(c.deep_analyzed)}</td><td class="num">${num(c.defi_linked)}</td>
+      <td class="num">${num(c.level_b)}</td><td class="num">${num(c.level_cde)}</td><td class="num"><a href="#/best" onclick="bestQ.chain='${esc(c.chain)}';bestQ.offset=0;saveBest()">${num(c.in_ranking)}</a></td><td class="num">${num(c.in_global_top)}</td>
+      <td class="num">${num(c.pass)}</td><td class="num">${num(c.unknown)}</td><td class="num">${num(c.fail)}</td><td class="small">${esc(fb(c.fail_by_filter))}</td><td class="num">${num(c.pending_jobs)}</td>
+      <td class="small">${c.rpc_errors ? num(c.rpc_errors) + (c.rpc_last_error ? `<div class="muted">${esc(String(c.rpc_last_error).slice(0, 80))}</div>` : "") : "—"}</td></tr>`).join("")}</table></div>
+  <ul class="small">${d.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>
+  <div class="small muted">Три ситуации: «не обнаружен» по сохранённым данным неизмерим (смотрите пропуски покрытия); «обнаружен, но не прошёл фильтры» — столбцы FAIL;
+    «прошёл рыночные фильтры, но не попал в рейтинг» — уровень B (DeFi-связь не подтверждена) и «в рейтинге» минус «в первой странице».</div>
+  <h2>Источники и лимиты</h2><div class="card"><table><tr><th>Источник</th><th class="num">Лимит, запросов/мин</th><th class="num">Вызовов</th><th class="num">Ошибок</th><th class="num">Ограничений частоты</th><th>Последний успех</th><th>Последняя ошибка</th></tr>
+    ${d.sources.map(x => `<tr><td>${esc(x.source)}</td><td class="num">${x.limit_per_min ?? "—"}</td><td class="num">${num(x.calls)}</td><td class="num">${num(x.errors)}</td><td class="num">${num(x.rate_limited)}</td><td class="small">${dt(x.last_success_at)}</td><td class="small">${dt(x.last_error_at)}${x.last_error ? `<div class="muted">${esc(String(x.last_error).slice(0, 90))}</div>` : ""}</td></tr>`).join("")}</table></div>`;
 }
 
 /* ---------- Карточка проекта ---------- */
@@ -908,7 +934,7 @@ async function vSettings(v) {
     ${fld("filters.chain_min_dex_volume_30d_usd", "Сеть: мин. DEX-объём 30д, $")}${fld("filters.chain_max_stable_decline_90d_pct", "Сеть: макс. падение стейблкоинов 90д, %")}
   </form></div>
   <div class="card"><h3>Рыночный минимум (уровень B) и оценка</h3><form class="inline">${fld("market_minimum.min_liquidity_usd", "Мин. ликвидность, $")}${fld("market_minimum.min_volume_24h_usd", "Мин. объём 24ч, $")}${fld("scoring.watchlist_min_preliminary", "Мин. предв. оценка для уровня E")}</form></div>
-  <div class="card"><h3>Сети</h3>${Object.entries(d.chains).map(([k, c]) => `<label class="small" style="margin-right:14px"><input type="checkbox" data-chain="${k}" ${d.enabled_chains.includes(k) ? "checked" : ""}> ${esc(c.name)} <span class="muted">(${esc(c.support)})</span></label>`).join("")}</div>
+  <div class="card"><h3>Сети <span class="small muted">включено: ${d.enabled_chains.length}; состояние, ограничения (ончейн, лимиты API) и пропуски — на странице <a href="#/coverage">«Покрытие сетей»</a>. Сети не включаются автоматически: бесплатные лимиты API общие для всех сетей.</span></h3>${Object.entries(d.chains).map(([k, c]) => `<label class="small" style="margin-right:14px"><input type="checkbox" data-chain="${k}" ${d.enabled_chains.includes(k) ? "checked" : ""}> ${esc(c.name)} <span class="muted">(${esc(c.support)})</span></label>`).join("")}</div>
   <div class="card"><h3>Обнаружение и интервалы</h3><form class="inline">
     <label>Фоновый мониторинг<select data-p="scheduler_enabled"><option value="true" ${s.scheduler_enabled ? "selected" : ""}>включён (рекомендуется)</option><option value="false" ${!s.scheduler_enabled ? "selected" : ""}>на паузе</option></select></label>
     ${fld("intervals_min.discovery", "Новые пулы, каждые N мин")}${fld("intervals_min.candidates_refresh", "Проверка кандидатов, мин")}${fld("intervals_min.fundamentals", "Фундаментал, мин")}${fld("intervals_min.weekly_snapshot", "Недельный снимок, мин")}${fld("intervals_min.backup", "Резервная копия, мин")}

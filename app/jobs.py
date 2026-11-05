@@ -40,6 +40,33 @@ SOURCES_OF = {"quotes": ["dexscreener"], "discover": ["geckoterminal"], "backfil
               "protocols": ["defillama"]}
 
 
+_rr_cursor = {"i": 0}
+
+
+def fair_pick(items: list[tuple[int, str]], n: int) -> list[tuple[int, str]]:
+    """Справедливый выбор: внутри одного уровня приоритета токены чередуются по сетям (round-robin), стартовая сеть
+    сдвигается от такта к такту. Большая партия одной сети не вытесняет другие; приоритеты уровней сохраняются."""
+    out: list[tuple[int, str]] = []
+    for tier in sorted({t for t, _ in items}):
+        by: dict[str, list[str]] = {}
+        for t, u in items:
+            if t == tier:
+                by.setdefault(u.split(":")[0], []).append(u)
+        chains = sorted(by)
+        if not chains:
+            continue
+        k = _rr_cursor["i"] % len(chains)
+        chains = chains[k:] + chains[:k]
+        while any(by.values()) and len(out) < n:
+            for ck in chains:
+                if by[ck] and len(out) < n:
+                    out.append((tier, by[ck].pop(0)))
+        if len(out) >= n:
+            break
+    _rr_cursor["i"] += 1
+    return out
+
+
 class Lane:
     def __init__(self, name: str, runner: "Runner"):
         self.name = name
@@ -238,13 +265,13 @@ class Runner:
         pr = parse_iso(db.q1("SELECT MAX(fetched_at) m FROM protocols")["m"])
         if pr is None or (now_utc() - pr).total_seconds() > 86400:
             sub("protocols", 2)
-        # котировки: пакеты по 10, приоритет = лучший уровень в пакете
-        dq = refresh.due_tokens("quote", 40)
+        # котировки: пакеты по 10, приоритет = лучший уровень в пакете; кандидаты чередуются по сетям (справедливо)
+        dq = fair_pick(refresh.due_tokens("quote", 1_000_000), 40)
         for i in range(0, len(dq), 10):
             chunk = dq[i:i + 10]
             sub("quotes", min(t for t, _ in chunk), uids=sorted(u for _, u in chunk))
         for kind, job, n in (("deep", "deep", 3), ("onchain", "onchain", 2), ("fundamentals", "fund", 3), ("coingecko", "cg", 2)):
-            for tier, uid in refresh.due_tokens(kind, n):
+            for tier, uid in fair_pick(refresh.due_tokens(kind, 1_000_000), n):  # все готовые к обновлению — затем справедливый выбор
                 sub(job, tier + (1 if job == "deep" else 0), uid=uid)
         last_b = db.q1("SELECT MAX(started_at) m FROM jobs WHERE job='backup' AND status='done'")["m"]
         lbk = parse_iso(last_b)

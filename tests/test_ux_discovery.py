@@ -242,3 +242,69 @@ def test_11_sort_three_states_nulls_last_and_kept_on_refresh(tmp_path):
     assert o["afterRefresh"] == o["desc"] and o["arrow2"] == "▼"                  # сохраняется при автообновлении
     assert o["reset"] == o["def"]                                                 # третье нажатие — порядок по умолчанию
     assert o["parse"] == [1_500_000, -48.5, 89, o["parse"][3], None, "1inch"] and o["parse"][3] > 0
+
+
+# ---------------------------------------------------------------- этап B: справедливость сетей, лимиты, дубли, покрытие
+def test_06_large_rh_batch_does_not_block_base():
+    from app import jobs
+    items = [(3, f"robinhood:0x{i:040x}") for i in range(200)] + [(3, "base:0x" + "b" * 40), (3, "eth:0x" + "e" * 40)]
+    picked = [u for _, u in jobs.fair_pick(items, 3)]
+    assert {u.split(":")[0] for u in picked} == {"robinhood", "base", "eth"}  # каждая сеть получает место в первом же такте
+    # приоритет уровня важнее чередования: срочные (уровень 0) идут первыми
+    items2 = [(0, "robinhood:0x" + "1" * 40)] + items
+    assert jobs.fair_pick(items2, 2)[0] == (0, "robinhood:0x" + "1" * 40)
+    # стартовая сеть сдвигается от такта к такту — ни одна сеть не ждёт бесконечно
+    firsts = {jobs.fair_pick(items, 1)[0][1].split(":")[0] for _ in range(6)}
+    assert firsts == {"robinhood", "base", "eth"}
+
+
+def test_06b_plan_selects_across_chains(monkeypatch):
+    from app import jobs, refresh
+    rh = [(3, f"robinhood:0x{i:040x}") for i in range(90)]
+    other = [(3, "base:0x" + "b" * 40), (3, "bsc:0x" + "c" * 40)]
+    monkeypatch.setattr(refresh, "due_tokens", lambda kind, limit=30: (rh + other)[:limit])
+    monkeypatch.setattr(jobs.Runner, "_src_ok", lambda self, job: True)
+    r = jobs.Runner()
+    r.plan()
+    deep = [j["kw"]["uid"] for j in r.lanes["main"].keys.values() if j["job"] == "deep"]
+    assert {u.split(":")[0] for u in deep} >= {"base", "bsc"}  # 90 токенов RH не заняли все места
+
+
+def test_07_api_limits_and_queue_bounds_respected(monkeypatch):
+    from app import http, jobs
+    s = config.load_settings()
+    s["rate_limits_per_min"]["geckoterminal"] = 9
+    s["queue_max_per_lane"] = 5
+    config.save_settings(s)
+    http.reset_limiters()
+    assert abs(http.limiter("geckoterminal").interval - 60 / 9) < 1e-9  # общий лимит источника задаётся настройкой
+    r = jobs.Runner()
+    for i in range(20):
+        r.submit("deep", 3, uid=f"robinhood:0x{i:040x}")
+    assert r.lanes["main"].size() == 5  # очередь ограничена
+
+
+def test_08_no_duplicate_jobs():
+    from app import jobs
+    r = jobs.Runner()
+    a = r.submit("deep", 3, uid="base:0x" + "1" * 40)
+    b = r.submit("deep", 2, uid="base:0x" + "1" * 40)
+    assert a == b and r.lanes["main"].size() == 1
+
+
+def test_coverage_report_from_stored_data_only():
+    import httpx
+    from app import coverage, http
+    calls = []
+    http.set_client(httpx.Client(transport=httpx.MockTransport(lambda q: calls.append(1) or httpx.Response(200, json={}))))
+    try:
+        _token(800, chain="base")
+        _token(801, chain="robinhood", level="B")
+        rep = cl.get("/api/coverage").json()
+        assert calls == []
+        rows = {c["chain"]: c for c in rep["chains"]}
+        assert rows["base"]["tokens"] >= 1 and rows["base"]["coverage_pct"] is None   # процент не выдумывается
+        assert rows["base"]["onchain_logs"] is False and rows["robinhood"]["level_b"] >= 1
+        assert rows["base"]["in_ranking"] >= 1
+    finally:
+        http.set_client(None)
