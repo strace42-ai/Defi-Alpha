@@ -57,7 +57,8 @@ def main() -> None:
     def need_rows():
         return db.q("SELECT t.uid, t.chain, t.level, t.coingecko_id FROM tokens t JOIN filter_current fc ON fc.token_uid=t.uid "
                     "AND fc.filter_key='mcap' WHERE t.asset_class='token' AND (fc.status='UNKNOWN' OR fc.confidence='preliminary') "
-                    "ORDER BY CASE t.level WHEN 'E' THEN 0 WHEN 'D' THEN 1 WHEN 'C' THEN 2 WHEN 'B' THEN 3 ELSE 4 END")
+                    "ORDER BY CASE WHEN fc.status='UNKNOWN' THEN 0 ELSE 1 END, "
+                    "CASE t.level WHEN 'E' THEN 0 WHEN 'D' THEN 1 WHEN 'C' THEN 2 WHEN 'B' THEN 3 ELSE 4 END")
     need = need_rows()
     by_chain: dict[str, list[str]] = {}
     for r in need[:a.quick_limit]:

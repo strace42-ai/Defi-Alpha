@@ -96,6 +96,8 @@ def due_tokens(kind: str, limit: int = 30) -> list[tuple[int, str]]:
     col = {"quote": "last_quote_at", "coingecko": "last_cg_at", "fundamentals": "last_fund_at"}.get(kind)
     rows = {r["token_uid"]: dict(r) for r in db.q("SELECT * FROM refresh_state")}
     tok = {r["uid"]: dict(r) for r in db.q("SELECT uid, last_deep_at, last_onchain_at, protocol_slug, coingecko_id, chain FROM tokens")}
+    mstat = {r["token_uid"]: ("UNKNOWN" if r["status"] == "UNKNOWN" else r["confidence"]) for r in db.q(
+        "SELECT token_uid, status, confidence FROM filter_current WHERE filter_key='mcap'")} if kind == "coingecko" else {}
     out = []
     for uid, tier in t.items():
         if kind == "deep":
@@ -112,9 +114,11 @@ def due_tokens(kind: str, limit: int = 30) -> list[tuple[int, str]]:
             if kind == "fundamentals" and not (tok.get(uid) or {}).get("protocol_slug"):
                 continue
         if due(kind, last, tier):
-            out.append((tier, last or "", uid))
+            # при равном приоритете сначала токены, где MCAP не установлен (CoinGecko может дать circulating)
+            pri2 = (0 if mstat.get(uid) == "UNKNOWN" else 1 if mstat.get(uid) == "preliminary" else 2) if kind == "coingecko" else 0
+            out.append((tier, pri2, last or "", uid))
     out.sort()
-    return [(t_, u) for t_, _, u in out[:limit]]
+    return [(t_, u) for t_, _, _, u in out[:limit]]
 
 
 # ------------------------------------------------------------------ котировки (быстрый канал)

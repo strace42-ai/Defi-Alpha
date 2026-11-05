@@ -196,7 +196,8 @@ def filter_decision(a: dict, limit: float) -> tuple[str, str | None, str, list[s
     bad_source = any(c["kind"] == "exceeds_upper_bound" for c in a["conflicts"])
     need_check = ["Сверить circulating supply и цену по первоисточникам; выяснить причину расхождения"]
     if a["price"] is None and not pts:
-        return "UNKNOWN", None, "Цена не установлена", ["Получить цену из ликвидных пулов"]
+        return ("UNKNOWN", None, "Цена не установлена: нет пулов с достаточной ликвидностью и сделками (цена почти пустого пула "
+                "не используется)", ["Получить цену из ликвидных пулов"])
     if pts:
         mlo = min(p["mcap"] for p in pts)
         mhi = max(p["mcap"] for p in pts)

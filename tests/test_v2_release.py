@@ -411,3 +411,13 @@ def test_scenario_c_estimated_range_crossing_is_manual_review():
     a = M.assess({"price": P, "coingecko": {"verified_contract": True, "circulating_supply": 75e6},
                   "ds": {"market_cap": 8e6, "fdv": 9e6}})  # 3–8 млн
     assert M.filter_decision(a, 5e6)[0] == "UNKNOWN"
+
+
+def test_coingecko_queue_prefers_unknown_mcap():
+    a = tok(addr="0x" + "a1" * 20, level="B")
+    b = tok(addr="0x" + "b2" * 20, level="B")
+    db.ex("UPDATE tokens SET coingecko_id='x' WHERE uid IN (?,?)", (a, b))
+    db.ex("INSERT INTO filter_current(token_uid,filter_key,status,confidence,evaluated_at) VALUES(?,?,?,?,?)", (a, "mcap", "PASS", "preliminary", now_iso()))
+    db.ex("INSERT INTO filter_current(token_uid,filter_key,status,confidence,evaluated_at) VALUES(?,?,?,?,?)", (b, "mcap", "UNKNOWN", None, now_iso()))
+    order = [u for _, u in refresh.due_tokens("coingecko", 10)]
+    assert order.index(b) < order.index(a)
