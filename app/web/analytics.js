@@ -5,7 +5,7 @@
   const EV = {
     confirmed: ["подтверждено", "ev-c"], final: ["окончательно", "ev-c"], complete: ["полностью", "ev-c"],
     reported: ["данные источника", "ev-r"], calculated: ["рассчитано", "ev-r"],
-    estimated: ["оценка", "ev-e"], probable: ["вероятно", "ev-e"], partial: ["частично", "ev-e"], in_progress: ["эпоха идёт", "ev-e"],
+    estimated: ["оценка", "ev-e"], probable: ["вероятно", "ev-e"], claimed: ["заявлено, не проверено", "ev-u"], partial: ["частично", "ev-e"], in_progress: ["эпоха идёт", "ev-e"],
     unknown: ["неизвестно", "ev-u"], unconfirmed: ["границы не подтверждены", "ev-u"], see_momentum: ["см. импульс", "ev-u"],
   };
   const ev = s => { const [t, c] = EV[s] || [s || "—", "ev-u"]; return `<span class="fb ${c}">${esc(t)}</span>`; };
@@ -166,7 +166,7 @@
         ${(r.conflicts || []).length ? `<div class="warnbox">Конфликт ролей адресов: ${r.conflicts.map(c => `${esc(short(c.address))}: ${esc(c.conflict)}`).join("; ")}</div>` : ""}
         ${(r.limitations || []).map(x => `<div class="small sev-medium">${esc(x)}</div>`).join("")}</div>
       <h2>Проверяемые ответы</h2><div class="card"><table><tr><th>Вопрос</th><th>Статус</th><th class="num">Значение</th><th>Основание</th></tr>
-        ${r.answers.map(a => `<tr><td>${esc(a.q)}</td><td>${ev(a.status)}</td><td class="num">${a.value == null ? '<span class="muted">—</span>' : Array.isArray(a.value) ? a.value.map(x => `нед. ${x.week}: ${x.pct != null ? x.pct.toFixed(1) + "%" : esc(EV[x.status] ? EV[x.status][0] : x.status)}`).join("<br>") : typeof a.value === "object" ? tok(a.value) : num(a.value, 0)}
+        ${r.answers.map(a => `<tr><td>${esc(a.q)}</td><td>${ev(a.status)}</td><td class="num">${a.value == null ? '<span class="muted">—</span>' : Array.isArray(a.value) ? a.value.map(x => `нед. ${x.week}: ${x.pct != null ? x.pct.toFixed(1) + "%" : x.min_pct != null ? "подтверждено ≥ " + x.min_pct.toFixed(1) + "%, полная доля неизвестна" : esc(EV[x.status] ? EV[x.status][0] : x.status)}`).join("<br>") : typeof a.value === "object" ? tok(a.value) : num(a.value, 0)}
           ${a.extra ? Object.entries(a.extra).filter(([, x]) => x && x.tokens).map(([k, x]) => `<div class="small muted">${esc(k)}: ${tok(x)}</div>`).join("") : ""}</td><td class="small">${esc(a.basis || "")}</td></tr>`).join("")}</table></div>
       <div class="grid g2"><div class="card"><h3>Выпуск и сжигание ${ev(t.status)}</h3><div class="kv">
         <div>Выпущено (Σ mint)</div><div>${tok(t.minted)} <span class="small muted">${num(t.mint_events)} событий</span></div>
@@ -189,7 +189,7 @@
         ${r.epochs.map(e => `<tr><td>${esc(e.week)}</td><td class="small">${esc((e.start || "").slice(0, 16))} — ${esc((e.end || "").slice(0, 16))}<div class="muted">блоки ${num(e.start_block)}–${e.end_block ? num(e.end_block) : "…"}</div></td>
           <td>${ev(e.state)}</td><td class="num">${tok(e.budget)}</td><td class="num">${tok(e.minted_all)}${e.all_mints_to_budget_pct != null ? `<div class="small muted">${e.all_mints_to_budget_pct.toFixed(0)}% бюджета — не использование</div>` : ""}</td>
           <td class="num">${e.lp_emission ? tok(e.lp_emission) : unk()}</td><td class="num">${tok(e.unknown)}</td>
-          <td>${ev(e.utilization.status)} ${e.utilization.value_pct != null ? e.utilization.value_pct.toFixed(1) + "%" : ""}<div class="small muted">${esc(e.utilization.reason || "")}</div></td>
+          <td>${ev(e.utilization.status)} ${e.utilization.value_pct != null ? e.utilization.value_pct.toFixed(1) + "%" : e.utilization.confirmed_pct != null ? `подтверждено ≥ ${e.utilization.confirmed_pct.toFixed(1)}%` + (e.utilization.upper_bound_pct != null ? ` <span class="small muted">(не более ${e.utilization.upper_bound_pct.toFixed(1)}%, если вся не классифицированная часть — LP)</span>` : "") : ""}<div class="small muted">${esc(e.utilization.reason || e.utilization.basis || "")}</div></td>
           <td class="num">${e.price && e.price.value != null ? usd(e.price.value) + ` <span class="small muted">${e.price.days} дн.</span>` : unk(e.price ? "нет свечей" : "")}</td>
           <td class="num">${e.emission_usd ? usd(e.emission_usd.all_post_tge_mints) + ' <span class="fb ev-e">оценка</span>' : unk()}</td>
           <td class="num">${e.fees && e.fees.fees != null ? usd(e.fees.fees) : unk(e.fees && e.fees.fees_partial_days ? `${e.fees.fees_partial_days} из 7 дн.` : "")}</td>
@@ -266,7 +266,7 @@
         const u = (s.epochs || []).filter(x => x.state === "complete");
         h += `<div class="small">Эмиссионное давление: выпущено ${tok(s.minted)} ${s.reconciled ? '<span class="fb ev-c">сверено с totalSupply</span>' : '<span class="fb ev-e">не сверено</span>'}
           · Genesis подтв. ${tok(s.genesis_confirmed)} · до запуска не подтв. ${tok(s.pre_tge_unclassified)} · LP-эмиссия ${s.lp_emission ? tok(s.lp_emission) : unk("не выделена")}
-          · неизвестно ${s.unknown_share_pct != null ? s.unknown_share_pct.toFixed(0) + "%" : "н/д"} · бюджет: ${u.length ? u.map(x => x.util_pct != null ? x.util_pct.toFixed(0) + "%" : "не проверено").join(" / ") : "—"}
+          · неизвестно ${s.unknown_share_pct != null ? s.unknown_share_pct.toFixed(0) + "%" : "н/д"} · бюджет: ${u.length ? u.map(x => x.util_pct != null ? x.util_pct.toFixed(0) + "%" : x.util_confirmed_pct != null ? "≥" + x.util_confirmed_pct.toFixed(0) + "% (не полно)" : "не проверено").join(" / ") : "—"}
           · <a href="#/emission/${encodeURIComponent(uid)}">подробно →</a></div>`;
       }
       h = h ? `<div class="card" style="max-width:980px;padding:8px 12px"><b class="small">Аналитика 2.1</b>${h}</div>` : "";

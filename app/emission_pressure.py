@@ -25,7 +25,7 @@ from . import analytics, db
 from .analytics import GENESIS_ROLES, LP_ROLES, OTHER_EMISSION_ROLES, ROLES
 from .util import loads, now_utc, parse_iso
 
-VERSION = "emission-1.0"
+VERSION = "emission-1.1"  # 2.1.1: полнота классификации для FINAL; точные уровни доказательности
 DAY = 86400
 CATEGORY_NAMES = {
     "genesis": "Genesis (стартовая аллокация)", "pre_tge_unclassified": "До запуска, категория не подтверждена",
@@ -33,6 +33,15 @@ CATEGORY_NAMES = {
     "allocation_after_tge": "Аллокация после запуска (вестинг/казначейство)", "mint_to_escrow": "Mint сразу в ve-escrow",
     "system_minter": "Mint на контракт minter (назначение не установлено)", "unknown": "Неизвестное назначение",
 }
+EVIDENCE_RANK = {"confirmed": 3, "probable": 2, "claimed": 1, "unknown": 0}
+
+
+def weakest(levels) -> str:
+    """Итоговая доказательность группы — по самому слабому элементу."""
+    levels = list(levels)
+    return min(levels, key=lambda x: EVIDENCE_RANK.get(x, 0)) if levels else "unknown"
+
+
 STAGE2 = "этап 2: ограниченный индексатор событий claim / ve-escrow для выбранных протоколов ещё не реализован"
 STAGE3 = "этап 3: трассировка наград и подтверждённых swap-событий выполняется только после проверки этапов 1–2"
 
@@ -135,7 +144,8 @@ def classify(ev: dict, role: dict | None, tge_block: int | None) -> tuple[str, s
     """→ (категория, доказательность, роль). Роль с конфликтом в реестре не применяется."""
     r = role["role"] if role and not role.get("conflict") else None
     conf = (role or {}).get("confidence")
-    ev_level = "confirmed" if conf == "confirmed" else "probable"
+    # уровень доказательности роли переносится КАК ЕСТЬ (без повышения claimed → probable)
+    ev_level = conf if conf in EVIDENCE_RANK and conf != "unknown" else "unknown"
     pre = tge_block is not None and ev["block"] < tge_block
     if pre:
         if r in GENESIS_ROLES:
@@ -255,13 +265,15 @@ def compute(uid: str, data: dict) -> dict:
     res["coverage"]["status"] = "complete" if exact_now else "partial"
     res["categories"] = [{"key": k, "name": CATEGORY_NAMES[k], "amount": A(cat_raw[k]), "events": cat_n[k], "recipients": len(cat_recips[k]),
                           "share_of_minted_pct": float(Decimal(cat_raw[k]) * 100 / Decimal(minted)) if minted else None,
-                          "evidence": ("confirmed" if cat_ev[k] == {"confirmed"} else "probable" if "unknown" not in cat_ev[k] else "unknown")}
+                          "evidence": weakest(cat_ev[k])}
                          for k in CATEGORY_NAMES if cat_n.get(k)]
     gen_conf = sum(int(g["amount"]["raw"]) for g in genesis_items if g["category"] == "genesis" and g["evidence"] == "confirmed")
-    gen_prob = sum(int(g["amount"]["raw"]) for g in genesis_items if g["category"] == "genesis" and g["evidence"] != "confirmed")
+    gen_prob = sum(int(g["amount"]["raw"]) for g in genesis_items if g["category"] == "genesis" and g["evidence"] == "probable")
+    gen_claim = sum(int(g["amount"]["raw"]) for g in genesis_items if g["category"] == "genesis" and g["evidence"] in ("claimed", "unknown"))
     gen_unk = sum(int(g["amount"]["raw"]) for g in genesis_items if g["category"] == "pre_tge_unclassified")
-    res["genesis"] = {"confirmed": A(gen_conf), "probable": A(gen_prob), "pre_tge_unclassified": A(gen_unk), "items": genesis_items[:50],
-                      "status": "unknown" if not tge_block else ("confirmed" if gen_conf and not gen_unk and not gen_prob else "partial"),
+    res["genesis"] = {"confirmed": A(gen_conf), "probable": A(gen_prob), "claimed": A(gen_claim), "pre_tge_unclassified": A(gen_unk),
+                      "items": genesis_items[:50],
+                      "status": "unknown" if not tge_block else ("confirmed" if gen_conf and not gen_unk and not gen_prob and not gen_claim else "partial"),
                       "note": "Genesis — только mint до блока TGE на адрес с ролью стартовой аллокации; остальное до запуска — не подтверждено"}
     # ---- LP-эмиссия: какие роли считаются подходящими (из версии токеномики, иначе gauge/распределитель)
     eligible_roles = set()
@@ -269,12 +281,41 @@ def compute(uid: str, data: dict) -> dict:
         eligible_roles.add(analytics.LEGACY_KIND.get(k, k))
     eligible_roles = (eligible_roles & (LP_ROLES | OTHER_EMISSION_ROLES)) or set(LP_ROLES)
     labeled = [a for a, r in roles.items() if r["role"] in eligible_roles and not r.get("conflict")]
-    res["lp_emission"] = {"amount": A(cat_raw.get("lp_emission", 0) + (cat_raw.get("emission_other", 0) if "emission_contract" in eligible_roles else 0))
-                          if labeled else None,
-                          "eligible_roles": sorted(eligible_roles), "labeled_addresses": labeled,
-                          "status": ("unknown" if not labeled else "confirmed" if cat_ev.get("lp_emission") == {"confirmed"} else "probable"),
-                          "note": (None if labeled else "адреса эмиссионных контрактов (gauge / распределитель) не идентифицированы — "
-                                   "LP-эмиссия не выделяется; mint с неизвестным назначением остаются UNKNOWN")}
+    lp_cats = {"lp_emission"} | ({"emission_other"} if "emission_contract" in eligible_roles else set())
+
+    def split_lp(items) -> dict:
+        """Разделить mint на: подтверждённую LP-эмиссию; LP по роли без подтверждения; не классифицированные
+        (могут оказаться LP-эмиссией); доказанно не-LP (подтверждённая роль другой категории)."""
+        o = {"confirmed_lp": 0, "unconfirmed_lp": 0, "unclassified": 0, "proven_non_lp": 0}
+        for e, cat, lvl, _ in items:
+            if cat == "burn":
+                continue
+            v = int(e["amount_raw"])
+            if cat in lp_cats:
+                o["confirmed_lp" if lvl == "confirmed" else "unconfirmed_lp"] += v
+            elif cat in ("genesis", "allocation_after_tge", "mint_to_escrow") and lvl == "confirmed":
+                o["proven_non_lp"] += v
+            else:
+                o["unclassified"] += v
+        o["complete"] = o["unconfirmed_lp"] == 0 and o["unclassified"] == 0
+        return o
+    post = [x for x in classified if tge_block is None or x[0]["block"] >= tge_block]
+    tot = split_lp(post)
+    lp_levels = {lvl for e, cat, lvl, _ in post if cat in lp_cats}
+    res["lp_emission"] = {
+        "amount": A(tot["confirmed_lp"]) if labeled else None,
+        "unconfirmed": A(tot["unconfirmed_lp"]) if labeled else None,
+        "unclassified_post_tge": A(tot["unclassified"]),
+        "complete": bool(labeled and tot["complete"] and complete),
+        "eligible_roles": sorted(eligible_roles), "labeled_addresses": labeled,
+        "status": ("unknown" if not labeled else
+                   "confirmed" if tot["complete"] and complete and lp_levels <= {"confirmed"} else
+                   "partial" if tot["confirmed_lp"] else weakest(lp_levels or {"unknown"})),
+        "note": ("адреса эмиссионных контрактов (gauge / распределитель) не идентифицированы — LP-эмиссия не выделяется; "
+                 "mint с неизвестным назначением остаются UNKNOWN" if not labeled else
+                 None if tot["complete"] else
+                 "amount — только подтверждённая LP-эмиссия; часть выпуска после запуска не классифицирована и может также "
+                 "относиться к LP-эмиссии — полнота охвата эмиссионных контрактов не доказана")}
     # ---- эпохи
     epochs = []
     prices = {int(x[0]): (Decimal(str(x[1])), Decimal(str(x[2] or 0))) for x in (data.get("price") or []) if x and x[1] is not None}
@@ -302,20 +343,31 @@ def compute(uid: str, data: dict) -> dict:
                        "by_category": {k: A(v) for k, v in by.items() if k != "burn"},
                        "unknown": A(by.get("unknown", 0) + by.get("system_minter", 0)),
                        "covered_to_block": scan_to, "coverage_complete": bool(scan_to and (b1 is None or scan_to >= b1))})
-            lp = by.get("lp_emission", 0) + (by.get("emission_other", 0) if "emission_contract" in eligible_roles else 0)
+            sp = split_lp(sel)
+            lp = sp["confirmed_lp"] + sp["unconfirmed_lp"]
             budget = int(ep["budget"]["raw"]) if ep["budget"] else None
+            pct = (lambda raw: float(Decimal(raw) * 100 / Decimal(budget))) if budget else (lambda raw: None)
+            bounds = {"confirmed_lp": A(sp["confirmed_lp"]), "unconfirmed_lp": A(sp["unconfirmed_lp"]), "unclassified": A(sp["unclassified"]),
+                      "classification_complete": sp["complete"], "confirmed_pct": pct(sp["confirmed_lp"]),
+                      "upper_bound_pct": pct(sp["confirmed_lp"] + sp["unconfirmed_lp"] + sp["unclassified"])}
             if not labeled:
-                util = {"status": "unknown", "reason": "не проверено: эмиссионные адреса не идентифицированы (нужны роли gauge / распределитель)"}
+                util = {"status": "unknown", "classification_complete": False,
+                        "reason": "не проверено: эмиссионные адреса не идентифицированы (нужны роли gauge / распределитель)"}
             elif budget is None:
-                util = {"status": "unknown", "reason": "бюджет эпохи не указан в версии токеномики"}
+                util = {"status": "unknown", "reason": "бюджет эпохи не указан в версии токеномики", **bounds}
             elif not ep["coverage_complete"]:
-                util = {"status": "partial", "reason": "события эпохи просканированы не полностью", "value_pct": float(Decimal(lp) * 100 / Decimal(budget))}
+                util = {"status": "partial", "final": False, "reason": "события эпохи просканированы не полностью", **bounds}
             elif in_progress:
-                util = {"status": "partial", "final": False, "value_pct": float(Decimal(lp) * 100 / Decimal(budget)),
+                util = {"status": "partial", "final": False, **bounds,
                         "reason": "эпоха не завершена — частичный результат, не сравнивать с завершёнными эпохами"}
+            elif not sp["complete"]:
+                util = {"status": "partial", "final": False, **bounds,
+                        "reason": "полнота классификации не доказана: подтверждено не менее confirmed_pct; часть mint эпохи "
+                                  "не классифицирована или LP-роль не подтверждена — полная доля бюджета неизвестна"}
             else:
-                util = {"status": "final", "final": True, "value_pct": float(Decimal(lp) * 100 / Decimal(budget)),
-                        "remaining": A(budget - lp)}
+                util = {"status": "final", "final": True, **bounds, "value_pct": pct(sp["confirmed_lp"]),
+                        "remaining": A(budget - sp["confirmed_lp"]),
+                        "basis": "каждый mint эпохи доказанно отнесён к LP-эмиссии или к другой подтверждённой категории"}
             ep["lp_emission"] = A(lp) if labeled else None
             ep["utilization"] = util
             ep["all_mints_to_budget_pct"] = float(Decimal(m_all) * 100 / Decimal(budget)) if budget else None
@@ -415,7 +467,8 @@ def compute(uid: str, data: dict) -> dict:
                       "unknown": res["unknown_recipients"]["total"], "unknown_share_pct":
                           float(Decimal(unk_total) * 100 / Decimal(minted)) if minted else None,
                       "epochs": [{"week": e["week"], "state": e["state"], "util": e["utilization"].get("status"),
-                                  "util_pct": e["utilization"].get("value_pct")} for e in epochs],
+                                  "util_pct": e["utilization"].get("value_pct"),
+                                  "util_confirmed_pct": e["utilization"].get("confirmed_pct")} for e in epochs],
                       "conflicts": len(res["conflicts"])}
     return res
 
@@ -426,7 +479,8 @@ def _answers(r: dict) -> list[dict]:
     lp = r["lp_emission"]
     out = [
         {"q": "Сколько токенов выпущено первоначально (Genesis)?", "status": g["status"],
-         "value": g["confirmed"], "extra": {"не подтверждено (до запуска)": g["pre_tge_unclassified"], "вероятно": g["probable"]},
+         "value": g["confirmed"], "extra": {"не подтверждено (до запуска)": g["pre_tge_unclassified"], "вероятно": g["probable"],
+                                           "заявлено, не проверено": g["claimed"]},
          "basis": g["note"]},
         {"q": "Сколько выпущено именно на LP-вознаграждения?", "status": lp["status"], "value": lp["amount"],
          "basis": lp["note"] or f"mint после запуска на адреса с ролями: {', '.join(lp['eligible_roles'])}"},
@@ -442,7 +496,8 @@ def _answers(r: dict) -> list[dict]:
          "basis": "eligible fees не установлены; по эпохам показано отношение к ОБЩИМ комиссиям DefiLlama (справочно)"},
         {"q": "Какая доля бюджета использована по эпохам?",
          "status": "unknown" if all(e["utilization"]["status"] == "unknown" for e in r["epochs"]) else "partial",
-         "value": [{"week": e["week"], "status": e["utilization"]["status"], "pct": e["utilization"].get("value_pct")} for e in r["epochs"]],
+         "value": [{"week": e["week"], "status": e["utilization"]["status"], "pct": e["utilization"].get("value_pct"),
+                    "min_pct": e["utilization"].get("confirmed_pct")} for e in r["epochs"]],
          "basis": (r["epochs"][0]["utilization"].get("reason") if r["epochs"] else "нет недельных бюджетов в токеномике")},
         {"q": "Есть ли подтверждённые продажи полученных вознаграждений?", "status": "unknown", "value": None, "basis": STAGE3},
         {"q": "Улучшается ли экономика относительно роста эмиссии?", "status": "see_momentum", "value": None,

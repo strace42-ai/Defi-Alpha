@@ -253,9 +253,11 @@ def test_09_incomplete_epoch_is_not_final():
     _, data = ep.load(uid)
     r = ep.compute(uid, data)
     w = {e["week"]: e for e in r["epochs"]}
-    assert w[1]["utilization"]["status"] == "final" and w[1]["utilization"]["value_pct"] == pytest.approx(50.0)
-    assert w[1]["utilization"]["remaining"]["raw"] == str(5_000_000 * DEC)
-    assert w[2]["utilization"]["value_pct"] == pytest.approx(4_000_000 / 9_800_000 * 100)
+    # 2.1.1: в неделе 1 есть mint 2M на неклассифицированный адрес — не FINAL, а подтверждённая нижняя граница
+    assert w[1]["utilization"]["status"] == "partial" and w[1]["utilization"]["confirmed_pct"] == pytest.approx(50.0)
+    # в неделе 2 — только размеченный gauge (и burn): классификация полная → FINAL
+    assert w[2]["utilization"]["status"] == "final" and w[2]["utilization"]["value_pct"] == pytest.approx(4_000_000 / 9_800_000 * 100)
+    assert w[2]["utilization"]["remaining"]["raw"] == str((9_800_000 - 4_000_000) * DEC)
     assert w[3]["state"] == "in_progress" and w[3]["utilization"]["status"] == "partial" and w[3]["utilization"]["final"] is False
     assert w[4]["state"] == "unconfirmed" and w[4]["utilization"]["status"] == "unknown"
     assert w[1]["minted_all"]["raw"] == str(7_000_000 * DEC)  # все mint ≠ LP-эмиссия
@@ -548,3 +550,67 @@ def test_analytics_cpu_share_is_limited(monkeypatch):
     stop = threading.Event()
     stop.set()
     assert analytics.run_module("momentum", deadline_s=30, force=True, stop=stop)["stopped_reason"] == "остановка программы"
+
+
+# ================================================================== 2.1.1: дефекты из аудита 2.1.0
+def test_211_utilization_not_final_while_unclassified_mints_remain():
+    """Аудит 2.1.0, дефект 1: в неделе 1 кроме размеченного gauge (5M) есть mint 2M на неизвестный адрес — он тоже
+    может быть LP-эмиссией. Полнота классификации не доказана → не FINAL; подтверждено ≥ 50%, полная доля неизвестна."""
+    uid = fables_like(with_gauge_role=True)
+    _, data = ep.load(uid)
+    r = ep.compute(uid, data)
+    w1 = next(e for e in r["epochs"] if e["week"] == 1)
+    u = w1["utilization"]
+    assert u["status"] != "final" and u.get("final") is not True
+    assert u["status"] == "partial" and u["classification_complete"] is False
+    assert u["confirmed_lp"]["raw"] == str(5_000_000 * DEC) and u["confirmed_pct"] == pytest.approx(50.0)
+    assert u["unclassified"]["raw"] == str(2_000_000 * DEC)
+    assert u["upper_bound_pct"] == pytest.approx(70.0)
+    assert u.get("value_pct") is None  # полная доля бюджета не выдаётся
+    assert r["lp_emission"]["complete"] is False and r["lp_emission"]["status"] != "confirmed"
+
+
+def test_211_utilization_final_only_when_all_epoch_mints_proven():
+    """FINAL — только если каждый mint эпохи доказанно отнесён к LP-эмиссии или к не-LP категории (подтверждённые роли)."""
+    uid = fables_like(with_gauge_role=True)
+    analytics.add_role("robinhood", uid, USER_B, "team_vesting", source_url="https://docs.example/vesting", source_type="official_docs",
+                       evidence="контракт вестинга в документации", confidence="confirmed")
+    _, data = ep.load(uid)
+    r = ep.compute(uid, data)
+    w = {e["week"]: e for e in r["epochs"]}
+    assert w[1]["utilization"]["status"] == "final" and w[1]["utilization"]["classification_complete"] is True
+    assert w[1]["utilization"]["value_pct"] == pytest.approx(50.0)
+    assert w[2]["utilization"]["status"] == "final" and w[2]["utilization"]["value_pct"] == pytest.approx(4_000_000 / 9_800_000 * 100)
+    assert w[3]["utilization"]["status"] == "partial"  # эпоха не завершена
+
+
+def test_211_claimed_role_is_not_promoted_to_probable():
+    """Аудит 2.1.0, дефект 2: роль с достоверностью «claimed» не должна становиться «probable»."""
+    uid = fables_like()
+    analytics.add_role("robinhood", uid, GAUGE, "gauge", source_url=None, source_type="user", evidence=None, confidence="claimed")
+    _, data = ep.load(uid)
+    r = ep.compute(uid, data)
+    lp = next(c for c in r["categories"] if c["key"] == "lp_emission")
+    assert lp["evidence"] == "claimed"
+    assert r["lp_emission"]["status"] in ("claimed", "unknown", "partial") and r["lp_emission"]["status"] != "probable"
+    w1 = next(e for e in r["epochs"] if e["week"] == 1)
+    assert w1["utilization"]["status"] != "final"
+    cls = {e["counterparty"]: e for e in ep.classified_events(uid) if e["kind"] == "mint"}
+    assert cls[GAUGE]["evidence"] == "claimed"
+
+
+def test_211_evidence_levels_preserved_exactly():
+    uid = fables_like()
+    analytics.add_role("robinhood", uid, GAUGE, "gauge", source_url="https://x", source_type="user", evidence="e", confidence="probable")
+    # метка 2.0 от пользователя (не документация и не ончейн) — «claimed», в т.ч. для Genesis
+    db.ex("UPDATE address_labels SET source_type='user' WHERE address=?", (SEEDER,))
+    _, data = ep.load(uid)
+    r = ep.compute(uid, data)
+    assert next(c for c in r["categories"] if c["key"] == "lp_emission")["evidence"] == "probable"
+    g = next(x for x in r["genesis"]["items"] if x["address"] == SEEDER)
+    assert g["category"] == "genesis" and g["evidence"] == "claimed"
+    assert r["genesis"]["confirmed"]["raw"] == "0"
+    assert ep.classify({"block": 1}, {"role": "gauge", "confidence": "claimed"}, 0)[1] == "claimed"
+    assert ep.classify({"block": 1}, {"role": "gauge", "confidence": "probable"}, 0)[1] == "probable"
+    assert ep.classify({"block": 1}, {"role": "gauge", "confidence": "confirmed"}, 0)[1] == "confirmed"
+    assert ep.classify({"block": 1}, {"role": "gauge"}, 0)[1] == "unknown"
