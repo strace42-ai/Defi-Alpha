@@ -85,9 +85,10 @@ def _state(uid: str) -> dict:
 
 
 def _set_state(uid: str, **kw) -> None:
-    db.ex("INSERT OR IGNORE INTO refresh_state(token_uid) VALUES(?)", (uid,))
     sets = ", ".join(f"{k}=?" for k in kw)
-    db.ex(f"UPDATE refresh_state SET {sets} WHERE token_uid=?", (*kw.values(), uid))
+    with db.tx() as c:
+        c.execute("INSERT OR IGNORE INTO refresh_state(token_uid) VALUES(?)", (uid,))
+        c.execute(f"UPDATE refresh_state SET {sets} WHERE token_uid=?", (*kw.values(), uid))
 
 
 def due_tokens(kind: str, limit: int = 30) -> list[tuple[int, str]]:
@@ -186,10 +187,9 @@ def refresh_quotes(uids: list[str]) -> dict:
                            "quotes_at": now_iso()})
                 f["pools"] = pl
             db.observe("token", u, "price_usd_robust", pc["value"], source="derived", unit="USD", confidence="derived",
-                       method=pc["method"], raw_id=raw, commit=False)
+                       method=pc["method"], raw_id=raw)
             db.observe("token", u, "liquidity_usd_quality", (f.get("pools") or {}).get("liquidity_quality_usd"), source="dexscreener",
-                       unit="USD", confidence="reported", method="сумма ликвидности качественных пар", commit=False)
-            db.get_conn().commit()
+                       unit="USD", confidence="reported", method="сумма ликвидности качественных пар")
             save_facts(u, f, "last_market_at")
             _set_state(u, last_quote_at=now_iso(), last_quote_ok_at=now_iso(), last_quote_error=None)
             pipeline.evaluate(u, old_facts=old)  # пересчёт MCAP, фильтров и сигналов по новой цене (без сетевых запросов)

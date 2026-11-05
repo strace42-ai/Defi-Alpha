@@ -127,18 +127,17 @@ def _status(source: str, ok: bool, err: str | None = None, rate_limited: bool = 
         b["rate_limited"] += 1
     try:
         now = now_iso()
-        c = db.get_conn()
-        c.execute("INSERT OR IGNORE INTO source_status(source) VALUES(?)", (source,))
-        if ok:
-            c.execute("UPDATE source_status SET last_success_at=?, calls_total=calls_total+1 WHERE source=?",
-                      (now, source))
-        else:
-            c.execute("UPDATE source_status SET last_error_at=?, last_error=?, calls_total=calls_total+1, "
-                      "errors_total=errors_total+1, rate_limited_total=rate_limited_total+? WHERE source=?",
-                      (now, (err or "")[:500], 1 if rate_limited else 0, source))
-        c.commit()
-    except Exception:  # статус не должен ломать сбор
-        pass
+        with db.tx() as c:  # одна короткая транзакция; при ошибке — ROLLBACK, без висящей блокировки
+            c.execute("INSERT OR IGNORE INTO source_status(source) VALUES(?)", (source,))
+            if ok:
+                c.execute("UPDATE source_status SET last_success_at=?, calls_total=calls_total+1 WHERE source=?",
+                          (now, source))
+            else:
+                c.execute("UPDATE source_status SET last_error_at=?, last_error=?, calls_total=calls_total+1, "
+                          "errors_total=errors_total+1, rate_limited_total=rate_limited_total+? WHERE source=?",
+                          (now, (err or "")[:500], 1 if rate_limited else 0, source))
+    except Exception as e:  # статус источника — вспомогательный; ошибка фиксируется в файле журнала
+        db._file_log("http._status", f"{source}: {type(e).__name__}: {e}")
 
 
 def request_json(source: str, method: str, url: str, *, params: dict | None = None,
@@ -151,6 +150,9 @@ def request_json(source: str, method: str, url: str, *, params: dict | None = No
             hit = _cache.get(key)
             if hit and hit[0] > time.monotonic():
                 return hit[1], None
+    if db.in_write_tx():
+        # сетевой запрос, удерживая транзакцию записи, заблокировал бы всех писателей на время ответа
+        raise RuntimeError(f"сетевой запрос внутри транзакции записи запрещён: {url}")
     ok_, left = source_available(source.split(":")[0] if source.startswith("rpc") is False else source)
     if not ok_:
         raise SourceError(source, "circuit_open", f"источник временно приостановлен после серии ошибок, повтор через {left:.0f} c")
@@ -220,6 +222,8 @@ def get_json(source: str, url: str, **kw) -> tuple[Any, int | None]:
 
 
 def get_text(source: str, url: str, retries: int = 2) -> str:
+    if db.in_write_tx():
+        raise RuntimeError(f"сетевой запрос внутри транзакции записи запрещён: {url}")
     lim = limiter(source)
     last = ""
     for attempt in range(retries + 1):

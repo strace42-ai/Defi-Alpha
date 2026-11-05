@@ -39,12 +39,13 @@ def emit(uid: str | None, atype: str, sev: str, title: str, condition: str, valu
          limitations: str = "", dedup: str | None = None) -> bool:
     key = dedup or f"{uid}:{atype}:{now_iso()[:10]}"
     try:
-        db.ex("INSERT INTO alerts(token_uid,alert_type,severity,title,condition,values_json,sources_json,limitations,dedup_key,created_at) "
-              "VALUES(?,?,?,?,?,?,?,?,?,?)",
-              (uid, atype, sev, title, condition, dumps(values), dumps(sources), limitations, key, now_iso()))
-        return True
-    except Exception:
-        return False  # дубликат
+        cur = db.ex("INSERT OR IGNORE INTO alerts(token_uid,alert_type,severity,title,condition,values_json,sources_json,limitations,"
+                    "dedup_key,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (uid, atype, sev, title, condition, dumps(values), dumps(sources), limitations, key, now_iso()))
+        return cur.rowcount == 1  # 0 — такой сигнал уже есть (дедупликация)
+    except Exception as e:  # noqa: BLE001 — сигнал не записан; причина — в журнале, вызывающий код продолжает
+        db.log_error("alerts.emit", f"{atype} {uid}: {type(e).__name__}: {e}")
+        return False
 
 
 def check_token(uid: str, sym: str, old: dict, new: dict, old_f: dict, new_f: dict, old_level: str | None,

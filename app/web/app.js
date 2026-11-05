@@ -34,8 +34,21 @@ function st(s, conf) {
 }
 function short(a) { return a && a.length > 14 ? a.slice(0, 8) + "…" + a.slice(-6) : a || ""; }
 async function api(path, opts = {}) {
-  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
-  if (!r.ok) { let m = r.status; try { m = (await r.json()).detail || m; } catch { } throw new Error(m); }
+  let r;
+  try {
+    r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  } catch (e) {
+    if (opts.method && opts.method !== "GET") toast("Нет связи с программой: действие не выполнено");
+    throw e;
+  }
+  if (!r.ok) {
+    let m = "HTTP " + r.status, j = null;
+    try { j = await r.json(); m = j.detail || m; } catch { }
+    if (j && j.setup_required && route().name !== "setup") { location.hash = "#/setup"; }
+    // для изменяющих действий — явное сообщение: действие не выполнено (на сервере транзакция откатана)
+    if (opts.method && opts.method !== "GET") toast("Ошибка: " + m);
+    throw new Error(m);
+  }
   return r.json();
 }
 function toast(m) { const t = $("#toast"); t.textContent = m; t.classList.remove("hidden"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.add("hidden"), 4500); }
@@ -98,7 +111,7 @@ function renderMonitor(j) {
   pb.dataset.on = j.scheduler_enabled ? "1" : "0";
 }
 async function liveTick() {
-  if (LIVE.busy || !META) return;
+  if (LIVE.busy || !META || route().name === "setup") return;
   LIVE.busy = true;
   try {
     const r = route();
@@ -136,7 +149,7 @@ async function render(soft = false) {
   document.querySelectorAll("#nav a").forEach(a => a.classList.toggle("active", a.dataset.r === r.name || (r.name === "token" && a.dataset.r === "scanner")));
   const v = $("#view");
   try {
-    const fn = { dashboard: vDashboard, scanner: vScanner, token: vToken, review: vReview, watchlist: vWatch, hidden: vHidden, tokenomics: vTokenomics, alerts: vAlerts, sources: vSources, settings: vSettings }[r.name] || vDashboard;
+    const fn = { setup: vSetup, dashboard: vDashboard, scanner: vScanner, token: vToken, review: vReview, watchlist: vWatch, hidden: vHidden, tokenomics: vTokenomics, alerts: vAlerts, sources: vSources, settings: vSettings }[r.name] || vDashboard;
     if (r.name === "settings" && soft) return;  // настройки — только по действию пользователя
     if (!soft || !["scanner", "token"].includes(r.name)) clearCharts();
     await fn(v, r.arg, soft);
@@ -150,7 +163,8 @@ async function vDashboard(v) {
   const d = await api("/api/dashboard");
   const L = d.levels || {}, S = d.statuses || {};
   const tile = (l, val, s = "") => `<div class="card tile"><div class="l">${l}</div><div class="v">${val}</div><div class="s">${s}</div></div>`;
-  v.innerHTML = `<h1>Обзор</h1>
+  const banner = await newDbBanner();
+  v.innerHTML = `<h1>Обзор</h1>${banner}
   ${!d.tokens ? `<div class="card"><b>База пока пуста.</b> Мониторинг уже запущен: первые реальные токены появятся здесь автоматически через 1–3 минуты.</div>` : ""}
   <div class="grid g4">
     ${tile("Пулов в базе", num(d.pools), `за 24 ч: ${num(d.pools_24h)}`)}
@@ -265,6 +279,8 @@ async function showMcap(uid) {
 document.addEventListener("click", e => {
   const mc = e.target.closest(".mcapcell"); if (mc && !e.target.closest("a")) { showMcap(mc.dataset.uid); return; }
   const hb = e.target.closest("[data-hide]"); if (hb) { hideToken(hb.dataset.hide); }
+  const pb = e.target.closest("[data-pend]");
+  if (pb) api("/api/setup/import", { method: "POST", body: { path: pb.dataset.pend } }).then(r => toast(r.message || "Перенос запланирован")).catch(() => { });
 });
 async function hideToken(uid) {
   const reason = prompt("Причина исключения из лучших кандидатов (необязательно):", "");
@@ -637,6 +653,54 @@ async function vWatch(v) {
   v.querySelectorAll("[data-wst]").forEach(sel => sel.onchange = async () => { await api("/api/watchlist/" + encodeURIComponent(sel.dataset.wst), { method: "POST", body: { status: sel.value } }); toast("Статус сохранён"); });
 }
 
+/* ---------- Выбор базы (безопасное обновление) ---------- */
+async function vSetup(v) {
+  const d = await api("/api/setup");
+  if (!d.active) { location.hash = "#/dashboard"; return; }
+  const cnt = c => `токенов ${num(c.counts.tokens || 0)}, событий эмиссии ${num(c.counts.supply_events || 0)}, наблюдений ${num(c.counts.observations || 0)}, в наблюдении ${num(c.counts.watchlist || 0)}`;
+  v.innerHTML = `<h1>Найдена прежняя установка</h1>
+  <div class="warnbox">В папке этой версии нет базы данных, а на компьютере найдена прежняя база. Новая пустая база <b>не создана</b>.
+    Фоновый сбор не запущен, пока вы не выберете вариант. Оригинал прежней базы не изменяется: переносится проверенная копия.</div>
+  <div class="card"><table><tr><th>Путь</th><th>Содержимое</th><th>Изменена</th><th>Схема</th><th></th></tr>
+  ${d.candidates.map((c, i) => `<tr><td class="mono small">${esc(c.path)}</td><td class="small">${cnt(c)}${c.fables ? " · есть FABLES" : ""}</td><td class="small">${dt(c.modified)}</td><td>v${esc(c.schema_version)}</td>
+    <td><button class="primary" data-imp="${i}">Перенести эту базу</button></td></tr>`).join("")}</table></div>
+  <div class="card"><h3>Другой путь</h3><form class="inline" id="impForm"><label>Путь к scanner.db или к папке data<input name="path" placeholder="C:\\DefiAlpha\\data\\scanner.db"></label><button class="primary">Перенести</button></form></div>
+  <div class="card"><button id="newDb">Начать с новой пустой базы</button> <span class="small muted">прежняя база останется на месте нетронутой</span></div>
+  <div id="impOut"></div>`;
+  const go = async path => {
+    $("#impOut").innerHTML = '<div class="card">Перенос: проверка целостности, копирование, сверка числа строк…</div>';
+    try {
+      const r = await api("/api/setup/import", { method: "POST", body: { path } });
+      const rep = r.report;
+      $("#impOut").innerHTML = `<div class="card"><b>Перенос выполнен.</b> Целостность: исходная ${esc(rep.integrity_source)}, копия ${esc(rep.integrity_dest)}. Оригинал не изменён: ${rep.source_untouched ? "да" : "нет"}.
+        <table><tr><th>Таблица</th><th class="num">Было</th><th class="num">Перенесено</th></tr>${Object.keys(rep.counts_source).map(k => `<tr><td>${esc(k)}</td><td class="num">${num(rep.counts_source[k])}</td><td class="num">${num(rep.counts_dest[k])}</td></tr>`).join("")}</table>
+        <p><a href="#/dashboard">Перейти к программе →</a></p></div>`;
+    } catch (e) { $("#impOut").innerHTML = `<div class="warnbox">${esc(e.message)}</div>`; }
+  };
+  v.querySelectorAll("[data-imp]").forEach(b => b.onclick = () => go(d.candidates[+b.dataset.imp].path));
+  $("#impForm").onsubmit = e => { e.preventDefault(); go(new FormData(e.target).get("path")); };
+  $("#newDb").onclick = async () => { if (!confirm("Начать с новой пустой базы? Прежняя база останется на месте.")) return; await api("/api/setup/new", { method: "POST", body: {} }); location.hash = "#/dashboard"; };
+}
+async function newDbBanner() {
+  try {
+    const s = await api("/api/setup");
+    const o = s.origin || {};
+    const rich = s.richer_elsewhere || [];
+    if (rich.length) {
+      const cc = s.current_counts || {};
+      return `<div class="warnbox"><b>Найдена другая установка, где данных больше, чем в текущей базе.</b>
+        Текущая база: токенов ${num(cc.tokens || 0)}, событий эмиссии ${num(cc.supply_events || 0)}.<br>
+        ${rich.map(c => `${esc(c.path)} — токенов ${num(c.counts.tokens || 0)}, событий эмиссии ${num(c.counts.supply_events || 0)}, изменена ${dt(c.modified)}
+          <button class="small" data-pend="${esc(c.path)}">Перенести при следующем запуске</button>`).join("<br>")}
+        <div class="small">Оригинал не изменяется; текущая база сохранится в data\\backups. После нажатия закройте и снова запустите программу.</div></div>`;
+    }
+    if (!o.db_origin || !o.db_origin.startsWith("new_empty") || o.imported_from) return "";
+    return `<div class="warnbox">Эта база создана заново ${dt(o.db_origin.split("new_empty:")[1])}: прежняя установка автоматически не найдена.
+      Если у вас есть прежняя база (например, со старой историей FABLES) — укажите путь:
+      <form id="pendForm" style="display:flex;gap:6px;margin-top:6px"><input name="path" style="flex:1" placeholder="C:\\старая_папка\\data\\scanner.db"><button>Перенести при следующем запуске</button></form></div>`;
+  } catch { return ""; }
+}
+
 /* ---------- Скрытые мной ---------- */
 async function vHidden(v) {
   const d = await api("/api/hidden");
@@ -736,4 +800,9 @@ async function vSettings(v) {
   document.querySelectorAll("[data-savesec]").forEach(b => b.onclick = async () => { const k = b.dataset.savesec; await api("/api/secrets", { method: "POST", body: { name: k, value: $(`[data-secret="${k}"]`).value } }); toast("Ключ сохранён"); render(); });
 }
 
-(async () => { META = await api("/api/meta"); render(); liveTick(); setInterval(liveTick, 5000); })();
+document.addEventListener("submit", async e => {
+  if (e.target.id !== "pendForm") return;
+  e.preventDefault();
+  try { const r = await api("/api/setup/import", { method: "POST", body: { path: new FormData(e.target).get("path") } }); toast(r.message || "Перенос запланирован"); } catch { }
+});
+(async () => { META = await api("/api/meta"); if (META.setup_required) location.hash = "#/setup"; render(); liveTick(); setInterval(liveTick, 5000); })();

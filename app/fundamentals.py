@@ -72,10 +72,32 @@ def link_protocol(uid: str) -> dict:
                                     "address": r["address"],
                                     "note": "совпадение ТОЛЬКО по тикеру — связь не подтверждена"})
     old = tok["protocol_slug"]
+    if not res["linked"] and old:
+        # Ранее подтверждённая связь снимается ТОЛЬКО при доказательстве изменения, а не из-за пустого/неполного ответа
+        prev = loads(tok["protocol_link_evidence"], {}) or {"slug": old, "name": old, "method": "unknown"}
+        r = db.q1("SELECT slug, address FROM protocols WHERE slug=?", (old,))
+        evidence_change = None
+        if prev.get("method") == "manual":
+            if not db.q1("SELECT 1 FROM manual_facts WHERE token_uid=? AND fact_key='protocol_link' AND active=1", (uid,)):
+                evidence_change = "ручная запись о связи отключена пользователем"
+        elif r is not None and r["address"]:
+            ch, a = parse_llama_address(r["address"])
+            if ch and ch.key == chain.key and a and a != addr:
+                evidence_change = f"DefiLlama теперь указывает для «{old}» другой адрес токена: {r['address']}"
+        if evidence_change:
+            res["unlinked_reason"] = evidence_change
+        else:
+            res["linked"] = {**prev, "retained": True,
+                             "retained_reason": ("протокол отсутствует в текущем каталоге DefiLlama" if r is None else
+                                                 "текущий каталог не подтверждает связь, но и не указывает другой адрес")
+                             + " — ранее подтверждённая связь сохранена до доказательства изменения",
+                             "retained_at": now_iso()}
     new = (res["linked"] or {}).get("slug")
-    db.ex("UPDATE tokens SET protocol_slug=?, protocol_link_evidence=? WHERE uid=?",
-          (new, dumps(res["linked"]) if res["linked"] else None, uid))
-    db.record_status_change(uid, "protocol_slug", old, new, (res["linked"] or {}).get("evidence", ""))
+    with db.tx():
+        db.ex("UPDATE tokens SET protocol_slug=?, protocol_link_evidence=? WHERE uid=?",
+              (new, dumps(res["linked"]) if res["linked"] else None, uid))
+        db.record_status_change(uid, "protocol_slug", old, new,
+                                res.get("unlinked_reason") or (res["linked"] or {}).get("evidence", ""))
     return res
 
 
@@ -135,7 +157,8 @@ def protocol_metrics(slug: str) -> dict:
             d, _ = defillama.fees_summary(slug, dt)
         except SourceError as e:
             out["errors"].append(str(e))
-            d = None
+            out[key] = {"available": None, "error": str(e)}  # сбой запроса ≠ «у DefiLlama нет данных»
+            continue
         if not d:
             out[key] = {"available": False, "note": "у DefiLlama нет данных этого типа (это НЕ ноль)"}
             continue
@@ -218,7 +241,10 @@ def update_token_fundamentals(uid: str) -> dict:
     h = get_chain_health(tok0["chain"])
     from .util import parse_iso
     if not h or not h.get("tvl_usd") or (now_utc() - (parse_iso(h.get("at")) or now_utc())).total_seconds() > 20 * 3600:
-        chain_health(tok0["chain"])  # метрики сети нужны фильтру «Живая экосистема»
+        try:
+            chain_health(tok0["chain"])  # метрики сети нужны фильтру «Живая экосистема»
+        except Exception as e:  # noqa: BLE001 — вспомогательные метрики сети не должны обрывать анализ токена
+            db.log_error("chain_health", f"{tok0['chain']}: {type(e).__name__}: {e}")
     link = link_protocol(uid)
     f = get_facts(uid)
     f["protocol_link"] = link
@@ -240,9 +266,17 @@ def update_token_fundamentals(uid: str) -> dict:
                 t30 = (m.get(key) or {}).get("total30d")
                 if t30 is not None:
                     m[f"{key}_annual_to_mcap_pct"] = t30 * 365 / 30 / mc["value"] * 100
-        f["protocol"] = m
-    else:
-        f.pop("protocol", None)
+        prevp = f.get("protocol") if (f.get("protocol") or {}).get("slug") == slug else None
+        if m.get("tvl_usd") is None and m.get("errors") and prevp:
+            # DefiLlama недоступен: прежние метрики сохраняются и помечаются устаревшими (не заменяются пустыми)
+            f["protocol"] = {**prevp, "stale": True, "last_attempt_at": now_iso(), "last_error": m["errors"][-1]}
+        else:
+            for k in ("fees", "revenue", "holders_revenue", "dex_volume"):  # отдельный тип данных не получен — оставить прежний
+                if prevp and (m.get(k) or {}).get("available") is None and prevp.get(k):
+                    m[k] = {**prevp[k], "stale": True}
+            f["protocol"] = m
+    elif link.get("unlinked_reason"):
+        f.pop("protocol", None)  # связь снята по доказательству изменения
     save_facts(uid, f, "last_enriched_at")
     return f
 
@@ -264,35 +298,41 @@ def chain_health(chain_key: str) -> dict:
         return out
     try:
         hist, _ = defillama.chain_tvl_history(ch.llama)
-        ser = [(int(x["date"]), float(x["tvl"])) for x in hist if x.get("tvl") is not None]
+        if not isinstance(hist, list):
+            raise ValueError(f"неожиданный формат ответа historicalChainTvl: {type(hist).__name__}")
+        ser = [(int(x["date"]), float(x["tvl"])) for x in hist if isinstance(x, dict) and x.get("tvl") is not None]
         if ser:
             out.update({"tvl_usd": ser[-1][1], "tvl_change_30d": _series_change(ser, 30),
                         "tvl_change_90d": _series_change(ser, 90), "tvl_series": [[t, v] for t, v in ser[-200:]]})
-    except SourceError as e:
+    except (SourceError, ValueError, TypeError, KeyError, AttributeError) as e:  # отказ или неожиданный формат
         out["errors"].append(str(e))
     try:
         st, _ = defillama.chain_stablecoins(ch.llama)
+        if not isinstance(st, list):
+            raise ValueError(f"неожиданный формат ответа stablecoins: {type(st).__name__}")
         ser = []
         for x in st:
+            if not isinstance(x, dict):
+                continue
             v = ((x.get("totalCirculatingUSD") or {}).get("peggedUSD"))
             if v is not None:
                 ser.append((int(x["date"]), float(v)))
         if ser:
             out.update({"stables_usd": ser[-1][1], "stables_change_30d": _series_change(ser, 30),
                         "stables_change_90d": _series_change(ser, 90)})
-    except SourceError as e:
-        out["errors"].append(str(e))
+    except (SourceError, ValueError, TypeError, KeyError, AttributeError) as e:
+        out["errors"].append(f"stablecoins: {e}")
     try:
         d, _ = defillama.chain_dex_overview(ch.llama)
         if d:
             out.update({"dex_volume_30d": fnum(d.get("total30d")), "dex_volume_change_30d": fnum(d.get("change_30dover30d"))})
-    except SourceError as e:
+    except (SourceError, ValueError, TypeError, KeyError, AttributeError) as e:  # отказ или неожиданный формат
         out["errors"].append(str(e))
     try:
         d, _ = defillama.chain_fees_overview(ch.llama)
         if d:
             out.update({"fees_30d": fnum(d.get("total30d")), "fees_change_30d": fnum(d.get("change_30dover30d"))})
-    except SourceError as e:
+    except (SourceError, ValueError, TypeError, KeyError, AttributeError) as e:  # отказ или неожиданный формат
         out["errors"].append(str(e))
     for k in ("tvl_usd", "stables_usd", "dex_volume_30d", "fees_30d"):
         db.observe("chain", chain_key, k, out.get(k), source="defillama", unit="USD", confidence="reported",

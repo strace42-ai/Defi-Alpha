@@ -14,13 +14,10 @@ from .chains import CHAINS, Chain
 from .discovery import upsert_pool, upsert_token
 from .http import SourceError, get_text
 from .sources import dexscreener, geckoterminal
-from .util import dumps, fnum, loads, normalize_address, now_iso, token_uid
+from .util import dumps, fnum, loads, normalize_address, now_iso, parse_iso, token_uid
 
 log = logging.getLogger("das.enrich")
 Progress = Callable[[str], None]
-
-
-_facts_lock = threading.RLock()
 
 
 class Facts(dict):
@@ -37,7 +34,7 @@ def get_facts(uid: str) -> Facts:
 
 
 def merge_facts(uid: str, facts: dict) -> dict:
-    """Слить изменения caller'а с актуальной версией в БД (вызывать под _facts_lock)."""
+    """Слить изменения caller'а с актуальной версией в БД (вызывать внутри db.tx())."""
     orig = getattr(facts, "_orig", None)
     r = db.q1("SELECT facts FROM tokens WHERE uid=?", (uid,))
     cur = loads(r["facts"], {}) if r else {}
@@ -54,7 +51,7 @@ def merge_facts(uid: str, facts: dict) -> dict:
 
 
 def save_facts(uid: str, facts: dict, field: str = "last_market_at") -> None:
-    with _facts_lock:
+    with db.tx():  # чтение актуальной версии, слияние и запись — атомарно
         merged = merge_facts(uid, facts)
         if field == "updated_at":
             db.ex("UPDATE tokens SET facts=?, updated_at=? WHERE uid=?", (dumps(merged), now_iso(), uid))
@@ -137,7 +134,7 @@ def quick_enrich(chain_key: str, uids: list[str], progress: Progress | None = No
                         ("liquidity_usd_gt", t.get("total_reserve_usd"), "USD", "GT total_reserve_in_usd по топ-пулам"),
                         ("volume_h24_gt", t.get("volume_h24"), "USD", "GT volume_usd.h24")):
                     db.observe("token", u, metric, val, source="geckoterminal", unit=unit, method=meth,
-                               verify_url=url, raw_id=graw, commit=False)
+                               verify_url=url, raw_id=graw)
                 f["gt"] = {"price_usd": t.get("price_usd"), "fdv_usd": t.get("fdv_usd"),
                            "market_cap_usd": t.get("market_cap_usd"), "total_supply": t.get("normalized_total_supply"),
                            "liquidity_usd": t.get("total_reserve_usd"), "volume_h24": t.get("volume_h24"),
@@ -160,7 +157,7 @@ def quick_enrich(chain_key: str, uids: list[str], progress: Progress | None = No
                                     ("fdv_usd_ds", top.get("ds_fdv")), ("mcap_usd_ds", top.get("ds_market_cap"))):
                     db.observe("token", u, metric, val, source="dexscreener", unit="USD",
                                method="DS top pair" + (" (токен — base)" if top.get("side") == "base" else ""),
-                               verify_url=_ds_url(chain, addr), raw_id=raw, commit=False)
+                               verify_url=_ds_url(chain, addr), raw_id=raw)
                 for v, p in zip(views, ps):
                     base_uid, _ = upsert_token(chain, p.get("base") or {}, source="dexscreener:tokens", reason="пара токена-кандидата")
                     quote_uid, _ = upsert_token(chain, p.get("quote") or {}, source="dexscreener:tokens", reason="пара токена-кандидата")
@@ -170,7 +167,6 @@ def quick_enrich(chain_key: str, uids: list[str], progress: Progress | None = No
                                     source="dexscreener")
             elif "ds" not in f:
                 f["ds"] = {"note": "DEX Screener не вернул пар для токена", "at": now_iso()}
-            db.get_conn().commit()
             # отметка рынка обновляется только при фактически полученных данных (иначе — признак устаревания)
             save_facts(u, f, "last_market_at" if (t or ps) else "updated_at")
         if progress:
@@ -260,20 +256,29 @@ def deep_enrich(uid: str, progress: Progress | None = None) -> dict:
     good = [p for p in pools if p["quality"]]
     total_liq = sum(p.get("liquidity_usd") or 0 for p in pools if p.get("side"))
     good_liq = sum(p.get("liquidity_usd") or 0 for p in good)
-    f["pools"] = {"count": len(pools), "quality_count": len(good), "liquidity_total_usd": total_liq,
-                  "liquidity_quality_usd": good_liq, "items": pools[:25], "at": now_iso(),
-                  "note": "GT /tokens/{addr}/pools (1 стр.) + DS /token-pairs; список может быть неполным"}
+    got_pools = bool(views)
+    if got_pools:
+        f["pools"] = {"count": len(pools), "quality_count": len(good), "liquidity_total_usd": total_liq,
+                      "liquidity_quality_usd": good_liq, "items": pools[:25], "at": now_iso(),
+                      "note": "GT /tokens/{addr}/pools (1 стр.) + DS /token-pairs; список может быть неполным"}
+    elif f.get("pools"):
+        # источники ничего не вернули: прежние данные сохраняются и помечаются устаревшими (не заменяются пустыми)
+        f["pools"] = {**f["pools"], "stale": True, "last_attempt_at": now_iso(), "last_error": (errors[-1:] or ["пустой ответ"])[0]}
     if med_price is not None:
         f["price"] = _v(med_price, "derived:median_quality_pools", method=f"медиана цены по {len(good)} качественным пулам",
                         confidence="derived", pools=[p["address"] for p in good])
         db.observe("token", uid, "price_usd_robust", med_price, source="derived", unit="USD",
                    confidence="derived", method="медиана качественных пулов")
+    elif (f.get("gt") or {}).get("price_usd"):
+        f["price"] = _v(f["gt"]["price_usd"], "geckoterminal", method="цена топ-пула GT (качественных пулов нет)", confidence="estimated")
+    elif (f.get("price") or {}).get("value") is not None:
+        f["price"] = {**f["price"], "stale": True, "last_attempt_at": now_iso(),
+                      "last_error": (errors[-1:] or ["нет качественных пулов в ответе"])[0]}
     else:
-        gp = (f.get("gt") or {}).get("price_usd")
-        f["price"] = _v(gp, "geckoterminal", method="цена топ-пула GT (качественных пулов нет)",
-                        confidence="estimated") if gp else {"value": None, "note": "цена не установлена"}
-    db.observe("token", uid, "liquidity_usd_quality", good_liq, source="derived", unit="USD", confidence="derived",
-               method="сумма ликвидности качественных пулов")
+        f["price"] = {"value": None, "note": "цена не установлена"}
+    if got_pools:
+        db.observe("token", uid, "liquidity_usd_quality", good_liq, source="derived", unit="USD", confidence="derived",
+                   method="сумма ликвидности качественных пулов")
     # ---- самый ранний известный пул (по ВСЕМ сохранённым пулам токена)
     er = db.q1("SELECT uid, dex, name, pool_created_at, sources FROM pools WHERE (base_uid=? OR quote_uid=?) "
                "AND pool_created_at IS NOT NULL ORDER BY pool_created_at ASC LIMIT 1", (uid, uid))
@@ -296,15 +301,23 @@ def deep_enrich(uid: str, progress: Progress | None = None) -> dict:
                 candles[p["address"]] = cs
         except SourceError as e:
             errors.append(str(e))
+    prev_ath = f.get("ath") if (f.get("ath") or {}).get("ath_usd") is not None else None
     if candles:
         ath = market.compute_ath(candles, float(fs["ath_wick_factor"]))
         ath["candles_days"] = {k: len(v) for k, v in candles.items()}
+        ath, keep_prev_history = merge_ath(prev_ath, ath)
         f["ath"] = ath
-        f["price_history"] = {k: [[c[0], c[4], c[5]] for c in v] for k, v in candles.items()}
-        db.observe("token", uid, "ath_usd", ath["ath_usd"], source="derived:geckoterminal_ohlcv", unit="USD",
-                   confidence="derived", method=ath["method"], observed_at=ath["ath_at"])
+        if not keep_prev_history:
+            f["price_history"] = {k: [[c[0], c[4], c[5]] for c in v] for k, v in candles.items()}
+        if not ath.get("retained_reason"):
+            db.observe("token", uid, "ath_usd", ath["ath_usd"], source="derived:geckoterminal_ohlcv", unit="USD",
+                       confidence="derived", method=ath["method"], observed_at=ath["ath_at"])
+    elif prev_ath:
+        # отказ или пустой ответ источника: ранее рассчитанный ATH и история цен сохраняются, помечаются устаревшими
+        f["ath"] = {**prev_ath, "stale": True, "last_attempt_at": now_iso(),
+                    "last_error": (errors[-1:] or ["API вернул пустую историю свечей"])[0]}
     else:
-        f["ath"] = {"ath_usd": None, "note": "OHLCV недоступен", "errors": errors[-1:]}
+        f["ath"] = {"ath_usd": None, "note": "OHLCV недоступен", "errors": errors[-1:], "last_attempt_at": now_iso()}
     # ---- GT info
     try:
         info, _ = geckoterminal.token_info(chain.gt, addr)
@@ -335,6 +348,24 @@ def deep_enrich(uid: str, progress: Progress | None = None) -> dict:
     if progress:
         progress(f"углублённые данные: {tok['symbol'] or addr[:10]}")
     return {"pools": len(pools), "quality": len(good), "errors": errors}
+
+
+def merge_ath(prev: dict | None, new: dict) -> tuple[dict, bool]:
+    """Новый расчёт ATH против прежнего. Возвращает (ATH, сохранить_прежнюю_историю_цен).
+    - история новых свечей не короче прежней → пересчёт заменяет прежний (данные полнее или равны);
+    - новый ATH выше прежнего → новый (максимум действительно обновлён);
+    - история короче И максимум ниже → прежний ATH сохраняется (недостающие свечи не означают, что максимума не было)."""
+    if not prev or prev.get("ath_usd") is None:
+        return new, False
+    pf, nf = parse_iso(prev.get("first_candle_at")), parse_iso(new.get("first_candle_at"))
+    shorter = bool(pf and nf and (nf - pf).total_seconds() > 86400)
+    if shorter and (new.get("ath_usd") or 0) <= prev["ath_usd"]:
+        kept = {k: v for k, v in prev.items() if k not in ("stale", "last_error", "last_attempt_at")}
+        kept["retained_reason"] = (f"новые свечи начинаются {nf.date()}, позже прежней истории ({pf.date()}); "
+                                   f"их максимум {new.get('ath_usd')} не выше прежнего ATH {prev['ath_usd']} — прежний ATH сохранён")
+        kept["last_checked_at"] = now_iso()
+        return kept, True
+    return new, False
 
 
 def compute_caps(uid: str, f: dict) -> None:

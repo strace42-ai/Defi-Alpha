@@ -77,6 +77,9 @@ def main() -> None:
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--scan", action="store_true", help="поставить обнаружение по всем сетям в очередь при старте")
     ap.add_argument("--rollback-migration", action="store_true", help="восстановить базу из копии перед последней миграцией")
+    ap.add_argument("--import-db", default=None, help="перенести прежнюю базу (путь к data\\scanner.db); оригинал не изменяется")
+    ap.add_argument("--rollback-import", action="store_true", help="отменить последний перенос базы")
+    ap.add_argument("--new-db", action="store_true", help="начать с новой пустой базы, даже если найдена прежняя установка")
     args = ap.parse_args()
     setup_logging()
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -92,33 +95,35 @@ def main() -> None:
         p = db.rollback_migration()
         print(f"Восстановлено из {p}" if p else "Копий перед миграцией не найдено")
         return
-    info = db.init_db()
-    if info.get("backup"):
-        print(f"  Схема базы обновлена v{info['from_version']} → v{info['to_version']}; резервная копия: {info['backup']}")
-    # прерванные задания прошлого запуска помечаются; позиции сканирования сохранены в scan_progress
-    db.ex("UPDATE jobs SET status='interrupted', finished_at=started_at WHERE status IN ('running','queued')")
-    from . import research
+    if args.rollback_import:
+        from . import dbmigrate
+        p = dbmigrate.rollback_import(db.DB_PATH)
+        print(f"Перенос отменён, восстановлено состояние до переноса ({p})" if p else "Переносов не найдено")
+        return
+    from . import startup
     from .jobs import runner
-    s = config.load_settings()  # здесь же — перенос настроек v1 → v2 (включение мониторинга)
-    seeded = research.load_seed()
-    seeded = list(dict.fromkeys(seeded + [r["uid"] for r in db.q(
-        "SELECT uid FROM tokens WHERE discovery_source='manual' AND last_deep_at IS NULL")]))
-    for uid in seeded:
-        runner.submit("token", priority=5, uid=uid)
-    if args.scan:
-        runner.submit("scan", priority=0)
-    if info.get("from_version") == 1:
-        runner.submit("reevaluate", priority=1)  # пересчёт всех проектов по пяти фильтрам после миграции
-    runner.start(scheduler=True)  # планировщик сам проверит устаревание данных и поставит обновления
+    st = startup.prepare(import_db=args.import_db, new_db=args.new_db, scan=args.scan)
+    s = config.load_settings()
+    if st["mode"] == "setup_required":
+        print("\n  ВНИМАНИЕ: в этой папке нет базы, но найдена прежняя установка:")
+        for c in st["candidates"][:5]:
+            print(f"    {c['path']}  (токенов: {c['counts'].get('tokens', 0)}, событий эмиссии: {c['counts'].get('supply_events', 0)})")
+        print("  Новая пустая база НЕ создана. Выберите в открывшемся окне: перенести прежнюю базу или начать с новой.")
+    elif st["mode"] == "new_empty":
+        print("\n  Создана НОВАЯ пустая база: прежняя установка не найдена. Если она есть — укажите путь к data\\scanner.db"
+              " в интерфейсе (Обзор) или запустите: python -m app --import-db ПУТЬ")
     port = _free_port(args.port or int(s.get("ui_port", 8765)))
     url = f"http://127.0.0.1:{port}/"
     (config.DATA_DIR / "instance.json").write_text(json.dumps({"url": url, "pid": os.getpid(), "started_at": now_iso()}), encoding="utf-8")
 
     def shutdown(*_):
         runner.stop()
-        db.checkpoint()  # сохранение базы (WAL → основной файл) перед завершением
+        if not startup.SETUP.get("active"):
+            db.checkpoint()  # сохранение базы (WAL → основной файл) перед завершением
     atexit.register(shutdown)
-    print(f"\n  DeFi Alpha Scanner {__version__}: {url}\n  Фоновый мониторинг: {'включён' if s.get('scheduler_enabled') else 'на паузе'}"
+    mon = ("не запущен — сначала выберите базу в окне программы" if startup.SETUP.get("active") else
+           "включён" if s.get("scheduler_enabled") else "на паузе")
+    print(f"\n  DeFi Alpha Scanner {__version__}: {url}\n  Фоновый мониторинг: {mon}"
           f"\n  Данные: {config.DATA_DIR}\n  Мониторинг работает, пока открыто это окно и компьютер не спит.\n")
     if not args.no_browser:
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()

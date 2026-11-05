@@ -9,8 +9,12 @@
 from __future__ import annotations
 
 import gzip
+import logging
 import sqlite3
+import sys
 import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -198,23 +202,109 @@ CREATE TABLE IF NOT EXISTS error_log (
 """
 
 
+BUSY_TIMEOUT_MS = 5000       # только для других процессов (внутри процесса записи сериализованы _WRITE_LOCK)
+WRITE_LOCK_TIMEOUT_S = 20    # ожидание общей блокировки писателей процесса
+SLOW_TX_MS = 1000            # транзакция дольше — запись в журнал с местом вызова
+
+_WRITE_LOCK = threading.RLock()
+_tx_local = threading.local()
+_flog = logging.getLogger("das.db")
+tx_stats = {"count": 0, "max_ms": 0.0, "max_where": None, "slow": 0, "rollbacks": 0, "lock_timeouts": 0, "busy": 0}
+_writer = {"thread": None, "since": None, "where": None}
+
+
 def connect(path: Path | None = None) -> sqlite3.Connection:
+    """Соединение в ЯВНОМ режиме autocommit: драйвер не открывает транзакций сам (не зависит от значения по умолчанию
+    в версии Python). Чтение не удерживает снимок; запись — только через tx() (BEGIN IMMEDIATE … COMMIT/ROLLBACK)."""
     p = path or DB_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(p), timeout=30, check_same_thread=False)
+    kw: dict[str, Any] = {"timeout": BUSY_TIMEOUT_MS / 1000, "check_same_thread": False}
+    if sys.version_info >= (3, 12):
+        kw["autocommit"] = True
+    else:
+        kw["isolation_level"] = None
+    conn = sqlite3.connect(str(p), **kw)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
 def get_conn() -> sqlite3.Connection:
-    """Соединение на поток."""
+    """Соединение на поток (только для чтения и для операций внутри tx())."""
     c = getattr(_local, "conn", None)
     if c is None or getattr(_local, "path", None) != DB_PATH:
         c = connect(DB_PATH)
         _local.conn = c
         _local.path = DB_PATH
     return c
+
+
+def in_write_tx() -> bool:
+    return getattr(_tx_local, "depth", 0) > 0
+
+
+def _caller() -> str:
+    import traceback as _tb
+    for fr in reversed(_tb.extract_stack(limit=8)[:-3]):
+        if not fr.filename.endswith(("db.py", "contextlib.py")):
+            return f"{Path(fr.filename).name}:{fr.lineno} {fr.name}"
+    return "?"
+
+
+@contextmanager
+def tx():
+    """Транзакция записи. Внутри процесса писатели сериализуются (никаких SQLITE_BUSY между своими потоками);
+    любое исключение → ROLLBACK, соединение не остаётся в транзакции. Вложенные tx() присоединяются к внешней.
+    Сетевые запросы внутри tx() запрещены (http.request_json проверяет in_write_tx())."""
+    if getattr(_tx_local, "depth", 0) > 0:
+        _tx_local.depth += 1
+        try:
+            yield get_conn()
+        finally:
+            _tx_local.depth -= 1
+        return
+    if not _WRITE_LOCK.acquire(timeout=WRITE_LOCK_TIMEOUT_S):
+        tx_stats["lock_timeouts"] += 1
+        w = dict(_writer)
+        raise sqlite3.OperationalError(f"write lock timeout {WRITE_LOCK_TIMEOUT_S}s; держит {w.get('thread')} "
+                                       f"с {w.get('since')} в {w.get('where')}")
+    c = get_conn()
+    t0 = time.perf_counter()
+    where = _caller()
+    _writer.update(thread=threading.current_thread().name, since=now_iso(), where=where)
+    _tx_local.depth = 1
+    try:
+        if c.in_transaction:  # не должно случаться; страховка от внешнего кода
+            c.execute("ROLLBACK")
+        try:
+            c.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError:
+            tx_stats["busy"] += 1
+            raise
+        try:
+            yield c
+            c.execute("COMMIT")
+        except BaseException:
+            tx_stats["rollbacks"] += 1
+            if c.in_transaction:
+                try:
+                    c.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+            raise
+    finally:
+        _tx_local.depth = 0
+        _writer.update(thread=None, since=None, where=None)
+        ms = (time.perf_counter() - t0) * 1000
+        tx_stats["count"] += 1
+        if ms > tx_stats["max_ms"]:
+            tx_stats["max_ms"], tx_stats["max_where"] = round(ms, 1), where
+        _WRITE_LOCK.release()
+        if ms > SLOW_TX_MS:
+            tx_stats["slow"] += 1
+            _flog.warning("долгая транзакция %.0f мс: %s", ms, where)
 
 
 SCHEMA_VERSION = 2
@@ -256,24 +346,25 @@ def init_db(conn: sqlite3.Connection | None = None, backup_before_migration: boo
     info = {"existed": existed, "from_version": ver, "to_version": SCHEMA_VERSION, "backup": None}
     if existed and ver < SCHEMA_VERSION and backup_before_migration and conn is None:
         info["backup"] = str(backup_file(f"pre-migration-v{ver}-to-v{SCHEMA_VERSION}"))
-    c.executescript(SCHEMA)  # новые таблицы (IF NOT EXISTS)
-    cols = _cols(c, "supply_events")
-    if "ts_source" not in cols:
-        c.execute("ALTER TABLE supply_events ADD COLUMN ts_source TEXT")
-        c.execute("UPDATE supply_events SET ts_source='interpolated' WHERE ts IS NOT NULL")
-    if ver < 2:
-        c.commit()
-        try:
-            c.execute("BEGIN")
-            _migrate_to_v2(c)
-            c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
-            c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('migrated_v2_at',?)", (now_iso(),))
-            c.execute("COMMIT")
-        except Exception:
+    with _WRITE_LOCK:
+        if c.in_transaction:
             c.execute("ROLLBACK")
+        c.executescript(SCHEMA)  # новые таблицы (IF NOT EXISTS); в режиме autocommit — без висящих транзакций
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            if "ts_source" not in _cols(c, "supply_events"):
+                c.execute("ALTER TABLE supply_events ADD COLUMN ts_source TEXT")
+                c.execute("UPDATE supply_events SET ts_source='interpolated' WHERE ts IS NOT NULL")
+            if ver < 2:
+                _migrate_to_v2(c)
+                c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
+                c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('migrated_v2_at',?)", (now_iso(),))
+            c.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('created_at',?)", (now_iso(),))
+            c.execute("COMMIT")
+        except BaseException:
+            if c.in_transaction:
+                c.execute("ROLLBACK")
             raise
-    c.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('created_at',?)", (now_iso(),))
-    c.commit()
     return info
 
 
@@ -339,10 +430,21 @@ def q1(sql: str, params: Iterable[Any] = ()) -> sqlite3.Row | None:
 
 
 def ex(sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
-    c = get_conn()
-    cur = c.execute(sql, tuple(params))
-    c.commit()
-    return cur
+    with tx() as c:
+        return c.execute(sql, tuple(params))
+
+
+def exmany(sql: str, rows: list, chunk: int = 500, on_chunk=None) -> int:
+    """Массовая запись пакетами: каждая порция — отдельная короткая транзакция (между ними пишут другие)."""
+    n = 0
+    for i in range(0, len(rows), chunk):
+        part = rows[i:i + chunk]
+        with tx() as c:
+            c.executemany(sql, part)
+        n += len(part)
+        if on_chunk:
+            on_chunk(len(part))
+    return n
 
 
 def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict]:
@@ -350,11 +452,9 @@ def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict]:
 
 
 def save_raw(source: str, url: str, status: int, body: bytes) -> int:
-    cur = get_conn().execute(
-        "INSERT INTO raw_responses(source,url,status,fetched_at,body) VALUES(?,?,?,?,?)",
-        (source, url, status, now_iso(), gzip.compress(body or b"")),
-    )
-    get_conn().commit()
+    body_z = gzip.compress(body or b"")  # сжатие — вне транзакции
+    cur = ex("INSERT INTO raw_responses(source,url,status,fetched_at,body) VALUES(?,?,?,?,?)",
+             (source, url, status, now_iso(), body_z))
     return int(cur.lastrowid)
 
 
@@ -368,18 +468,13 @@ def observe(entity_type: str, entity_id: str, metric: str, value: float | None, 
             observed_at: str | None = None, confidence: str = "reported",
             method: str | None = None, verify_url: str | None = None, raw_id: int | None = None,
             commit: bool = True) -> None:
-    """Записать наблюдение. value=None допустимо только с value_text (никаких подменных нулей)."""
+    """Записать наблюдение (собственная короткая транзакция или текущая tx()). value=None — только с value_text."""
     if value is None and value_text is None:
         return
-    c = get_conn()
-    c.execute(
-        "INSERT INTO observations(entity_type,entity_id,metric,value,value_text,unit,source,observed_at,"
-        "fetched_at,confidence,method,verify_url,raw_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (entity_type, entity_id, metric, value, value_text, unit, source, observed_at, now_iso(),
-         confidence, method, verify_url, raw_id),
-    )
-    if commit:
-        c.commit()
+    ex("INSERT INTO observations(entity_type,entity_id,metric,value,value_text,unit,source,observed_at,"
+       "fetched_at,confidence,method,verify_url,raw_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+       (entity_type, entity_id, metric, value, value_text, unit, source, observed_at, now_iso(),
+        confidence, method, verify_url, raw_id))
 
 
 def latest_obs(entity_type: str, entity_id: str, metric: str, source: str | None = None) -> dict | None:
@@ -410,10 +505,24 @@ def obs_series(entity_type: str, entity_id: str, metric: str, source: str | None
     return rows_to_dicts(q(sql, p))
 
 
+def _file_log(where: str, message: str) -> None:
+    try:
+        d = config.DATA_DIR / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "errors.log", "a", encoding="utf-8") as fh:
+            fh.write(f"{now_iso()} [{where}] {message[:4000]}\n")
+    except OSError:
+        pass
+
+
 def log_error(where: str, message: str) -> None:
+    """Никогда не бросает: сначала файл журнала, затем (если доступна) таблица error_log."""
+    _file_log(where, message)
+    if in_write_tx():  # нельзя писать в БД изнутри чужой (возможно, откатываемой) транзакции
+        return
     try:
         ex("INSERT INTO error_log(at,where_,message) VALUES(?,?,?)", (now_iso(), where, message[:2000]))
-    except sqlite3.Error:
+    except Exception:  # noqa: BLE001 — БД недоступна: запись уже есть в файле
         pass
 
 
@@ -436,10 +545,11 @@ def record_status_change(token_uid: str, field: str, old: Any, new: Any, reason:
 
 def add_conflict(token_uid: str, metric: str, values: Any, note: str) -> None:
     # не дублировать открытый конфликт по той же метрике в течение суток
-    r = q1("SELECT id FROM conflicts WHERE token_uid=? AND metric=? AND resolved=0 AND detected_at>=strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 day')",
-           (token_uid, metric))
-    if r:
-        ex("UPDATE conflicts SET values_json=?, note=? WHERE id=?", (dumps(values), note, r["id"]))
-        return
-    ex("INSERT INTO conflicts(token_uid,metric,values_json,detected_at,note) VALUES(?,?,?,?,?)",
-       (token_uid, metric, dumps(values), now_iso(), note))
+    with tx() as c:  # проверка и запись — атомарно
+        r = c.execute("SELECT id FROM conflicts WHERE token_uid=? AND metric=? AND resolved=0 AND "
+                      "detected_at>=strftime('%Y-%m-%dT%H:%M:%SZ','now','-1 day')", (token_uid, metric)).fetchone()
+        if r:
+            c.execute("UPDATE conflicts SET values_json=?, note=? WHERE id=?", (dumps(values), note, r["id"]))
+        else:
+            c.execute("INSERT INTO conflicts(token_uid,metric,values_json,detected_at,note) VALUES(?,?,?,?,?)",
+                      (token_uid, metric, dumps(values), now_iso(), note))

@@ -55,44 +55,59 @@ class Lane:
             return len(self.keys)
 
     def _loop(self) -> None:
-        db.init_db(backup_before_migration=False)
+        """Цикл очереди. Никакая ошибка (в т.ч. невозможность записать статус в БД) не завершает поток."""
         while not self.runner.stop_flag.is_set():
             try:
-                _, _, j = self.q.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            with self.lock:
-                self.keys.pop(j["key"], None)
-                self.current = {**j, "progress": "старт", "started_at": now_iso()}
-            log_it = j["job"] not in NO_LOG
-            if log_it:
-                db.ex("UPDATE jobs SET started_at=?, status='running' WHERE id=?", (now_iso(), j["id"]))
+                self._one()
+            except BaseException as e:  # noqa: BLE001 — последний рубеж: поток очереди не должен погибнуть
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
+                db._file_log(f"lane:{self.name}", "".join(traceback.format_exception(e))[-2000:])
+                self.runner.stop_flag.wait(1.0)
 
-            def prog(m: str, jid=j["id"], li=log_it):
-                with self.lock:
-                    if self.current:
-                        self.current["progress"] = m
-                if li:
-                    try:
-                        db.ex("UPDATE jobs SET progress=? WHERE id=?", (m[:500], jid))
-                    except Exception:
-                        pass
-            try:
-                stats = TASKS[j["job"]](prog, **j["kw"])
-                if log_it:
-                    db.ex("UPDATE jobs SET finished_at=?, status='done', stats=?, progress='готово' WHERE id=?",
-                          (now_iso(), dumps(stats), j["id"]))
-            except Exception as e:  # сбой задачи не останавливает очередь и планировщик
-                tb = traceback.format_exc()
-                log.error("task %s failed: %s", j["job"], tb)
-                db.log_error(f"task:{j['job']}", tb[-1500:])
-                if log_it:
-                    db.ex("UPDATE jobs SET finished_at=?, status='error', error=? WHERE id=?", (now_iso(), str(e)[:1000], j["id"]))
-            finally:
-                with self.lock:
-                    self.current = None
-                    self.done += 1
-                self.runner.last_task_end[j["key"]] = time.monotonic()
+    def _one(self) -> None:
+        try:
+            _, _, j = self.q.get(timeout=0.5)
+        except queue.Empty:
+            return
+        with self.lock:
+            self.keys.pop(j["key"], None)
+            self.current = {**j, "progress": "старт", "started_at": now_iso()}
+        log_it = j["job"] not in NO_LOG and j["id"]
+        if log_it:
+            _safe_job_update("UPDATE jobs SET started_at=?, status='running' WHERE id=?", (now_iso(), j["id"]))
+
+        def prog(m: str, jid=j["id"], li=log_it):
+            with self.lock:
+                if self.current:
+                    self.current["progress"] = m
+            if li:
+                _safe_job_update("UPDATE jobs SET progress=? WHERE id=?", (m[:500], jid))
+        try:
+            stats = TASKS[j["job"]](prog, **j["kw"])
+            if log_it:
+                _safe_job_update("UPDATE jobs SET finished_at=?, status='done', stats=?, progress='готово' WHERE id=?",
+                                 (now_iso(), dumps(stats), j["id"]))
+        except Exception as e:  # сбой задачи не останавливает очередь и планировщик
+            tb = traceback.format_exc()
+            log.error("task %s failed: %s", j["job"], tb)
+            db.log_error(f"task:{j['job']}", tb[-1500:])  # никогда не бросает
+            if log_it:
+                _safe_job_update("UPDATE jobs SET finished_at=?, status='error', error=? WHERE id=?",
+                                 (now_iso(), str(e)[:1000], j["id"]))
+        finally:
+            with self.lock:
+                self.current = None
+                self.done += 1
+            self.runner.last_task_end[j["key"]] = time.monotonic()
+
+
+def _safe_job_update(sql: str, params: tuple) -> None:
+    """Статус задачи в журнале — вспомогательный: при недоступности БД пишется в файл, поток продолжает работу."""
+    try:
+        db.ex(sql, params)
+    except Exception as e:  # noqa: BLE001
+        db._file_log("jobs.status", f"{type(e).__name__}: {e} :: {sql[:60]}")
 
 
 class Runner:
@@ -142,7 +157,11 @@ class Runner:
                 return None
         jid = 0
         if job not in NO_LOG:
-            jid = db.ex("INSERT INTO jobs(job,started_at,status,progress) VALUES(?,?,?,?)", (job, None, "queued", "в очереди")).lastrowid
+            try:
+                jid = db.ex("INSERT INTO jobs(job,started_at,status,progress) VALUES(?,?,?,?)", (job, None, "queued", "в очереди")).lastrowid
+            except Exception as e:  # noqa: BLE001 — задача всё равно выполняется; журнал заданий — вспомогательный
+                db._file_log("jobs.submit", f"{job}: {type(e).__name__}: {e}")
+                jid = 0
         j = {"id": jid, "job": job, "kw": kw, "key": k, "priority": pr, "lane": lane.name}
         with lane.lock:
             lane.keys[k] = j
@@ -214,7 +233,6 @@ class Runner:
         return put
 
     def _sched_loop(self) -> None:
-        db.init_db(backup_before_migration=False)
         tick = 0
         while not self.stop_flag.is_set():
             try:
@@ -222,7 +240,7 @@ class Runner:
                     self.plan()
                     if tick % 30 == 0:
                         check_sources(config.load_settings()["alerts"]["stale_hours"])
-            except Exception:
+            except Exception:  # планировщик не погибает: ошибка такта — в журнал (log_error не бросает)
                 db.log_error("scheduler", traceback.format_exc()[-1500:])
             tick += 1
             self.stop_flag.wait(10)

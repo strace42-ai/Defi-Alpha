@@ -46,6 +46,11 @@ def upsert_token(chain: Chain, tok: dict, *, source: str, reason: str) -> tuple[
     if not valid_address(chain.kind, addr):
         return None, False
     uid = token_uid(chain.key, chain.kind, addr)
+    with db.tx():  # проверка существования и вставка — атомарно (параллельные очереди не создают дублей/ошибок PK)
+        return _upsert_token_tx(chain, tok, addr, raw_addr, uid, source, reason)
+
+
+def _upsert_token_tx(chain, tok, addr, raw_addr, uid, source, reason):
     row = db.q1("SELECT uid, symbol, name, decimals, coingecko_id FROM tokens WHERE uid=?", (uid,))
     now = now_iso()
     aclass = classify_asset(chain, addr, tok.get("symbol"), tok.get("name"))
@@ -70,6 +75,12 @@ def upsert_token(chain: Chain, tok: dict, *, source: str, reason: str) -> tuple[
 def upsert_pool(chain: Chain, *, address: str, dex: str | None, name: str | None, base_uid: str | None,
                 quote_uid: str | None, created_at: str | None, source: str) -> str:
     puid = f"{chain.key}:{normalize_address(chain.kind, address)}"
+    with db.tx():
+        _upsert_pool_tx(chain, puid, address, dex, name, base_uid, quote_uid, created_at, source)
+    return puid
+
+
+def _upsert_pool_tx(chain, puid, address, dex, name, base_uid, quote_uid, created_at, source):
     now = now_iso()
     row = db.q1("SELECT uid, sources, pool_created_at FROM pools WHERE uid=?", (puid,))
     if row is None:
@@ -85,7 +96,6 @@ def upsert_pool(chain: Chain, *, address: str, dex: str | None, name: str | None
             created = created_at  # самая ранняя из известных дат создания пула
         db.ex("UPDATE pools SET last_seen_at=?, sources=?, pool_created_at=?, dex=COALESCE(dex,?), name=COALESCE(name,?) "
               "WHERE uid=?", (now, dumps(sorted(srcs)), created, dex, name, puid))
-    return puid
 
 
 def _ingest_gt_pools(chain: Chain, pools: list[dict], source: str, reason_tpl: str, raw_id: int | None,
@@ -101,21 +111,26 @@ def _ingest_gt_pools(chain: Chain, pools: list[dict], source: str, reason_tpl: s
             if not dt or days_between(dt, now_utc()) > max_age_days:
                 continue
         reason = reason_tpl.format(pool=p.get("name"), dex=p.get("dex"), created=created)
-        buid, bnew = upsert_token(chain, p["base"], source=source, reason=reason)
-        quid, qnew = upsert_token(chain, p["quote"], source=source, reason=reason)
-        puid = upsert_pool(chain, address=p["pool_address"], dex=p.get("dex"), name=p.get("name"),
-                           base_uid=buid, quote_uid=quid, created_at=created, source=source)
+        with db.tx():  # один пул — одна короткая транзакция (только SQL, без сети)
+            res = _ingest_one(chain, p, source, reason, raw_id, created)
         n += 1
-        for uid, isnew in ((buid, bnew), (quid, qnew)):
+        for uid, isnew in res:
             if uid and isnew:
                 new_tokens.append(uid)
-        if buid:
-            db.observe("pool", puid, "reserve_usd", p.get("reserve_usd"), source=source, unit="USD",
-                       confidence="reported", method="pool.reserve_in_usd", raw_id=raw_id, commit=False)
-            db.observe("pool", puid, "base_price_usd", p.get("base_price_usd"), source=source, unit="USD",
-                       confidence="reported", method="pool.base_token_price_usd", raw_id=raw_id, commit=False)
-    db.get_conn().commit()
     return n, new_tokens
+
+
+def _ingest_one(chain, p, source, reason, raw_id, created):
+    buid, bnew = upsert_token(chain, p["base"], source=source, reason=reason)
+    quid, qnew = upsert_token(chain, p["quote"], source=source, reason=reason)
+    puid = upsert_pool(chain, address=p["pool_address"], dex=p.get("dex"), name=p.get("name"),
+                       base_uid=buid, quote_uid=quid, created_at=created, source=source)
+    if buid:
+        db.observe("pool", puid, "reserve_usd", p.get("reserve_usd"), source=source, unit="USD",
+                   confidence="reported", method="pool.reserve_in_usd", raw_id=raw_id)
+        db.observe("pool", puid, "base_price_usd", p.get("base_price_usd"), source=source, unit="USD",
+                   confidence="reported", method="pool.base_token_price_usd", raw_id=raw_id)
+    return ((buid, bnew), (quid, qnew))
 
 
 def discover_new_pools(chain_key: str, progress: Progress | None = None) -> dict:
@@ -216,22 +231,23 @@ def parse_llama_address(addr: str | None) -> tuple[Chain | None, str | None]:
 
 
 def refresh_protocols(progress: Progress | None = None) -> list[dict]:
-    data, _ = defillama.protocols()
+    data, _ = defillama.protocols()  # сеть — до любых транзакций
     now = now_iso()
-    c = db.get_conn()
+    rows = []
     for p in data:
         slug = p.get("slug")
         if not slug:
             continue
         slim = {k: p.get(k) for k in ("name", "category", "chains", "address", "gecko_id", "symbol", "url",
                                       "listedAt", "tvl", "mcap", "audits", "parentProtocol", "twitter", "forkedFrom")}
-        c.execute("INSERT INTO protocols(slug,name,category,chains,address,gecko_id,symbol,url,listed_at,raw,fetched_at) "
-                  "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(slug) DO UPDATE SET name=excluded.name, "
-                  "category=excluded.category, chains=excluded.chains, address=excluded.address, gecko_id=excluded.gecko_id, "
-                  "symbol=excluded.symbol, url=excluded.url, listed_at=excluded.listed_at, raw=excluded.raw, fetched_at=excluded.fetched_at",
-                  (slug, p.get("name"), p.get("category"), dumps(p.get("chains") or []), p.get("address"),
-                   p.get("gecko_id"), p.get("symbol"), p.get("url"), iso(from_ts(p.get("listedAt"))), dumps(slim), now))
-    c.commit()
+        rows.append((slug, p.get("name"), p.get("category"), dumps(p.get("chains") or []), p.get("address"),
+                     p.get("gecko_id"), p.get("symbol"), p.get("url"), iso(from_ts(p.get("listedAt"))), dumps(slim), now))
+    # пакетами по 500 (короткие транзакции); старые записи не удаляются — пустой/неполный ответ ничего не стирает
+    db.exmany("INSERT INTO protocols(slug,name,category,chains,address,gecko_id,symbol,url,listed_at,raw,fetched_at) "
+              "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(slug) DO UPDATE SET name=excluded.name, "
+              "category=excluded.category, chains=excluded.chains, address=excluded.address, gecko_id=excluded.gecko_id, "
+              "symbol=excluded.symbol, url=excluded.url, listed_at=excluded.listed_at, raw=excluded.raw, fetched_at=excluded.fetched_at",
+              rows, chunk=500)
     if progress:
         progress(f"DefiLlama: обновлено {len(data)} протоколов")
     return data

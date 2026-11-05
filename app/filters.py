@@ -196,6 +196,10 @@ def f_drawdown(facts: dict, max_dd: float) -> dict:
     warn = "" if complete else " История свечей может не покрывать начало торгов: истинный ATH может быть выше."
     if facts.get("ath_pool_quality_warning"):
         warn += " " + facts["ath_pool_quality_warning"] + "."
+    if ath.get("stale"):
+        warn += f" ATH из прежнего расчёта: последнее обновление свечей не удалось ({ath.get('last_attempt_at')}: {ath.get('last_error')})."
+    if ath.get("retained_reason"):
+        warn += " " + ath["retained_reason"] + "."
     if dd > max_dd:
         # наблюдаемая просадка — нижняя граница истинной, поэтому FAIL надёжен даже при неполной истории
         return R("drawdown", FAIL, f"Просадка {dd:.1f}% > {max_dd:.0f}%", confidence="confirmed" if not facts.get("ath_pool_quality_warning") else "preliminary",

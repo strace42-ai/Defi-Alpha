@@ -93,19 +93,9 @@ def evaluate(uid: str, old_facts: dict | None = None) -> dict:
         return res
     fr = filters.evaluate_all(facts, man, health, s, now, tok["asset_class"])
     # история решений фильтров
-    c = db.get_conn()
     prev = {r["filter_key"]: dict(r) for r in db.q("SELECT * FROM filter_current WHERE token_uid=?", (uid,))}
-    for k, r in fr.items():
-        p = prev.get(k)
-        if not p or p["status"] != r["status"] or p["reason"] != r["reason"]:
-            c.execute("INSERT INTO filter_results(token_uid,filter_key,status,confidence,reason,evidence,params,evaluated_at) "
-                      "VALUES(?,?,?,?,?,?,?,?)", (uid, k, r["status"], r["confidence"], r["reason"], dumps(r["evidence"]),
-                                                  dumps(r.get("values")), now_iso()))
-        c.execute("INSERT INTO filter_current(token_uid,filter_key,status,confidence,reason,evidence,evaluated_at) VALUES(?,?,?,?,?,?,?) "
-                  "ON CONFLICT(token_uid,filter_key) DO UPDATE SET status=excluded.status, confidence=excluded.confidence, "
-                  "reason=excluded.reason, evidence=excluded.evidence, evaluated_at=excluded.evaluated_at",
-                  (uid, k, r["status"], r["confidence"], r["reason"], dumps(r["evidence"]), now_iso()))
-    c.commit()
+    with db.tx() as c:  # решения фильтров токена (история + текущее) — атомарно
+        _write_filters(c, uid, fr, prev)
     mm_ok, mm_reason = market_minimum(facts, s)
     st = {k: v["status"] for k, v in fr.items()}
     # уровни
@@ -145,6 +135,19 @@ def evaluate(uid: str, old_facts: dict | None = None) -> dict:
     old_filters = {k: {"status": v["status"], "confidence": v["confidence"]} for k, v in prev.items()}
     _apply(uid, tok, res, facts, old_filters, old_facts)
     return res
+
+
+def _write_filters(c, uid: str, fr: dict, prev: dict) -> None:
+    for k, r in fr.items():
+        p = prev.get(k)
+        if not p or p["status"] != r["status"] or p["reason"] != r["reason"]:
+            c.execute("INSERT INTO filter_results(token_uid,filter_key,status,confidence,reason,evidence,params,evaluated_at) "
+                      "VALUES(?,?,?,?,?,?,?,?)", (uid, k, r["status"], r["confidence"], r["reason"], dumps(r["evidence"]),
+                                                  dumps(r.get("values")), now_iso()))
+        c.execute("INSERT INTO filter_current(token_uid,filter_key,status,confidence,reason,evidence,evaluated_at) VALUES(?,?,?,?,?,?,?) "
+                  "ON CONFLICT(token_uid,filter_key) DO UPDATE SET status=excluded.status, confidence=excluded.confidence, "
+                  "reason=excluded.reason, evidence=excluded.evidence, evaluated_at=excluded.evaluated_at",
+                  (uid, k, r["status"], r["confidence"], r["reason"], dumps(r["evidence"]), now_iso()))
 
 
 def _record_mcap(uid: str, old: dict | None, new: dict, limit: float) -> None:
@@ -191,13 +194,13 @@ def _apply(uid: str, tok: dict, res: dict, facts: dict, old_filters: dict, old_f
     if res.get("filters"):
         cs = [v.get("confidence") for v in res["filters"].values() if v["status"] == "PASS"]
         conf = "confirmed" if cs and all(c == "confirmed" for c in cs) and len(cs) == len(res["filters"]) else ("preliminary" if cs else "low")
-    db.record_status_change(uid, "level", tok["level"], res["level"], res["reason"])
-    db.record_status_change(uid, "status", tok["status"], res["status"], res["reason"])
     facts["evaluation"] = {"level": res["level"], "status": res["status"], "reason": res["reason"],
                            "market_minimum": res.get("market_minimum"), "at": now_iso()}
     facts["score"] = sc
-    from .enrich import _facts_lock, merge_facts
-    with _facts_lock:
+    from .enrich import merge_facts
+    with db.tx():  # история статусов, слияние фактов и итог оценки — одна транзакция
+        db.record_status_change(uid, "level", tok["level"], res["level"], res["reason"])
+        db.record_status_change(uid, "status", tok["status"], res["status"], res["reason"])
         merged = merge_facts(uid, facts)  # только изменённые ключи — без затирания данных других очередей
         db.ex("UPDATE tokens SET level=?, status=?, status_reason=?, score_confirmed=?, score_max_verifiable=?, score_preliminary=?, "
               "confidence=?, facts=?, updated_at=? WHERE uid=?",

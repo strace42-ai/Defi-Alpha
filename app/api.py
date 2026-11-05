@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,20 @@ from .util import dumps, loads, now_iso, normalize_address, parse_iso, valid_add
 WEB = Path(__file__).resolve().parent / "web"
 app = FastAPI(title="DeFi Alpha Scanner", version=__version__)
 
+
+@app.exception_handler(sqlite3.Error)
+async def _db_error(request, exc):
+    """Ошибка БД → явный ответ: действие НЕ выполнено (транзакция откатана), интерфейс показывает причину."""
+    db._file_log("api", f"{request.method} {request.url.path}: {type(exc).__name__}: {exc}")
+    return JSONResponse({"detail": f"База данных временно недоступна, действие не выполнено и не сохранено: {exc}",
+                         "retry": True}, status_code=503)
+
+
+@app.exception_handler(Exception)
+async def _any_error(request, exc):
+    db._file_log("api", f"{request.method} {request.url.path}: {type(exc).__name__}: {exc}")
+    return JSONResponse({"detail": f"Внутренняя ошибка, действие не выполнено: {type(exc).__name__}: {exc}"}, status_code=500)
+
 _LOCAL_HOSTS = {"127.0.0.1", "localhost"}
 
 
@@ -27,6 +42,9 @@ _LOCAL_HOSTS = {"127.0.0.1", "localhost"}
 async def local_only(request, call_next):
     """Защита локального сервера: только Host 127.0.0.1/localhost (против DNS rebinding) и
     запрет изменяющих запросов с чужих сайтов (Origin не локальный)."""
+    from . import startup as _st
+    if _st.SETUP.get("active") and request.url.path.startswith("/api/") and not request.url.path.startswith(("/api/setup", "/api/meta")):
+        return JSONResponse({"detail": "Требуется выбор базы данных: найдена прежняя установка", "setup_required": True}, status_code=409)
     host = (request.headers.get("host") or "").split(":")[0]
     if host and host not in _LOCAL_HOSTS and host != "testserver":
         return JSONResponse({"detail": "forbidden host"}, status_code=403)
@@ -40,6 +58,11 @@ async def local_only(request, call_next):
         if request.headers.get("content-length", "0") not in ("0", "") and "application/json" not in ctype:
             return JSONResponse({"detail": "JSON expected"}, status_code=415)
     return await call_next(request)
+
+
+def _setup_active() -> bool:
+    from . import startup
+    return bool(startup.SETUP.get("active"))
 
 
 def _row(r: dict, fc: dict[str, dict] | None = None) -> dict:
@@ -177,10 +200,54 @@ def _query_tokens(search: str = "", chain: str = "", status: str = "", level: st
     return total, [_row(r, fm.get(r["uid"])) for r in rows]
 
 
+@app.get("/api/setup")
+def setup_state():
+    from . import startup
+    origin = None
+    if not startup.SETUP.get("active"):
+        r = db.q1("SELECT value FROM meta WHERE key='db_origin'")
+        imp = db.q1("SELECT value FROM meta WHERE key='imported_from'")
+        origin = {"db_origin": r["value"] if r else None, "imported_from": imp["value"] if imp else None,
+                  "tokens": db.q1("SELECT COUNT(*) n FROM tokens")["n"]}
+    return {**startup.SETUP, "db": str(db.DB_PATH), "origin": origin}
+
+
+@app.post("/api/setup/import")
+def setup_import(payload: dict = Body(...)):
+    """Перенос прежней базы. На экране выбора — сразу; в работающей программе — при следующем запуске
+    (активные соединения фоновых потоков нельзя безопасно подменить на лету)."""
+    from pathlib import Path as _P
+    from . import dbmigrate, startup
+    src = _P(str(payload.get("path") or "").strip().strip('"'))
+    if src.is_dir():
+        src = src / "scanner.db" if (src / "scanner.db").exists() else src / "data" / "scanner.db"
+    info = dbmigrate.db_info(src) if src.exists() else {"error": "файл не найден"}
+    if info.get("error"):
+        raise HTTPException(400, f"База не подходит: {info['error']}")
+    if startup.SETUP.get("active"):
+        rep = dbmigrate.import_db(src, db.DB_PATH)
+        if not rep["ok"]:
+            raise HTTPException(400, f"Перенос не выполнен (оригинал не изменён): {rep.get('error')}")
+        startup.complete()
+        return {"ok": True, "report": rep}
+    dbmigrate.pending_import_path().write_text(dumps({"path": str(src), "requested_at": now_iso()}), encoding="utf-8")
+    return {"ok": True, "pending": True, "source": info,
+            "message": "Перенос будет выполнен при следующем запуске программы (текущая база сохранится в резервной копии)."}
+
+
+@app.post("/api/setup/new")
+def setup_new():
+    from . import startup
+    if not startup.SETUP.get("active"):
+        return {"ok": True, "unchanged": True}
+    startup.complete(new_empty=True)
+    return {"ok": True}
+
+
 @app.get("/api/meta")
 def meta():
     return {"version": __version__, "filters": FILTER_NAMES, "levels": LEVELS, "funding_categories": FUNDING_CATEGORIES,
-            "watch_statuses": WATCH_STATUSES, "modes": MODES,
+            "watch_statuses": WATCH_STATUSES, "modes": MODES, "setup_required": _setup_active(),
             "chains": {k: {"name": c.name, "kind": c.kind, "support": c.support} for k, c in CHAINS.items()},
             "jobs": JOB_NAMES, "now_utc": now_iso()}
 
@@ -261,26 +328,33 @@ def hidden_list():
 
 @app.post("/api/hide/{uid:path}")
 def hide(uid: str, payload: dict = Body(default={})):
-    """Скрыть из лучших кандидатов (не удаление: запись, история и проверки сохраняются)."""
-    if not db.q1("SELECT 1 FROM tokens WHERE uid=?", (uid,)):
-        raise HTTPException(404)
+    """Скрыть из лучших кандидатов (не удаление). Состояние и журнал действия — одна транзакция; повтор — без дублей."""
     days = (payload or {}).get("days")
     until = None
     if days:
         from .util import iso, now_utc as _n
         until = iso(_n() + _dt.timedelta(days=int(days)))
-    db.ex("INSERT OR REPLACE INTO hidden_tokens(token_uid,hidden_at,until,reason,active) VALUES(?,?,?,?,1)",
-          (uid, now_iso(), until, (payload or {}).get("reason")))
-    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)",
-          (uid, "hide", dumps({"reason": (payload or {}).get("reason"), "until": until}), now_iso()))
-    return {"ok": True, "until": until}
+    reason = (payload or {}).get("reason")
+    with db.tx() as c:
+        if not c.execute("SELECT 1 FROM tokens WHERE uid=?", (uid,)).fetchone():
+            raise HTTPException(404, "токен не найден")
+        cur = c.execute("SELECT until, reason FROM hidden_tokens WHERE token_uid=? AND active=1", (uid,)).fetchone()
+        if cur and cur["until"] == until and (cur["reason"] or None) == (reason or None):
+            return {"ok": True, "until": until, "unchanged": True}  # уже скрыт так же — повтор ничего не меняет
+        c.execute("INSERT OR REPLACE INTO hidden_tokens(token_uid,hidden_at,until,reason,active) VALUES(?,?,?,?,1)",
+                  (uid, now_iso(), until, reason))
+        c.execute("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)",
+                  (uid, "hide", dumps({"reason": reason, "until": until}), now_iso()))
+    return {"ok": True, "until": until}  # ответ — только после успешного COMMIT
 
 
 @app.post("/api/unhide/{uid:path}")
 def unhide(uid: str):
-    db.ex("UPDATE hidden_tokens SET active=0 WHERE token_uid=?", (uid,))
-    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "restore", None, now_iso()))
-    return {"ok": True}
+    with db.tx() as c:
+        cur = c.execute("UPDATE hidden_tokens SET active=0 WHERE token_uid=? AND active=1", (uid,))
+        if cur.rowcount:
+            c.execute("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "restore", None, now_iso()))
+    return {"ok": True, "unchanged": cur.rowcount == 0}
 
 
 @app.post("/api/focus/{uid:path}")
@@ -294,11 +368,15 @@ def focus(uid: str):
 @app.post("/api/monitoring")
 def monitoring(payload: dict = Body(...)):
     s = config.load_settings()
-    s["scheduler_enabled"] = bool(payload.get("enabled"))
-    config.save_settings(s)
-    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(NULL,?,NULL,?)",
-          ("monitoring_on" if s["scheduler_enabled"] else "monitoring_off", now_iso()))
-    return {"enabled": s["scheduler_enabled"]}
+    want = bool(payload.get("enabled"))
+    if bool(s.get("scheduler_enabled")) == want:
+        return {"enabled": want, "unchanged": True}
+    with db.tx() as c:  # журнал действия и сохранение настройки: при ошибке записи настройка не меняется
+        c.execute("INSERT INTO user_actions(token_uid,action,details,at) VALUES(NULL,?,NULL,?)",
+                  ("monitoring_on" if want else "monitoring_off", now_iso()))
+        s["scheduler_enabled"] = want
+        config.save_settings(s)  # если запись файла упадёт — транзакция откатится
+    return {"enabled": want}
 
 
 @app.get("/api/live")
@@ -447,11 +525,12 @@ def add_fact(uid: str, payload: dict = Body(...)):
     if key == "funding" and payload.get("category") not in FUNDING_CATEGORIES:
         raise HTTPException(400, "укажите категорию финансирования")
     from .util import fnum
-    db.ex("INSERT INTO manual_facts(token_uid,fact_key,value,category,evidence_url,source_type,note,entered_by,entered_at,amount_usd,valuation_usd) "
-          "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-          (uid, key, payload.get("value"), payload.get("category"), payload.get("evidence_url"), payload.get("source_type") or "user",
-           payload.get("note"), "user", now_iso(), fnum(payload.get("amount_usd")), fnum(payload.get("valuation_usd"))))
-    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "add_fact", dumps({"fact_key": key}), now_iso()))
+    with db.tx():  # факт и запись в журнал действий — атомарно
+        db.ex("INSERT INTO manual_facts(token_uid,fact_key,value,category,evidence_url,source_type,note,entered_by,entered_at,amount_usd,valuation_usd) "
+              "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+              (uid, key, payload.get("value"), payload.get("category"), payload.get("evidence_url"), payload.get("source_type") or "user",
+               payload.get("note"), "user", now_iso(), fnum(payload.get("amount_usd")), fnum(payload.get("valuation_usd"))))
+        db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "add_fact", dumps({"fact_key": key}), now_iso()))
     pipeline.evaluate(uid, old_facts=None)
     return {"ok": True}
 
@@ -474,11 +553,12 @@ def add_tokenomics(uid: str, payload: dict = Body(...)):
         if params is None:
             raise HTTPException(400, "params должен быть JSON")
     cur = 1 if payload.get("is_current") else 0
-    if cur:
-        db.ex("UPDATE tokenomics_versions SET is_current=0 WHERE token_uid=?", (uid,))
-    db.ex("INSERT INTO tokenomics_versions(token_uid,version_label,published_at,source_url,source_type,is_current,params,note,entered_at) "
-          "VALUES(?,?,?,?,?,?,?,?,?)", (uid, payload.get("version_label"), payload.get("published_at"), payload.get("source_url"),
-                                        payload.get("source_type") or "user", cur, dumps(params), payload.get("note"), now_iso()))
+    with db.tx():  # снятие флага «актуальная» и вставка новой версии — атомарно
+        if cur:
+            db.ex("UPDATE tokenomics_versions SET is_current=0 WHERE token_uid=?", (uid,))
+        db.ex("INSERT INTO tokenomics_versions(token_uid,version_label,published_at,source_url,source_type,is_current,params,note,entered_at) "
+              "VALUES(?,?,?,?,?,?,?,?,?)", (uid, payload.get("version_label"), payload.get("published_at"), payload.get("source_url"),
+                                            payload.get("source_type") or "user", cur, dumps(params), payload.get("note"), now_iso()))
     if cur:
         from .alerts import emit
         emit(uid, "tokenomics_changed", "high", f"Новая актуальная версия токеномики: {payload.get('version_label')}",
@@ -492,8 +572,9 @@ def set_current_tokenomics(vid: int):
     r = db.q1("SELECT token_uid, version_label FROM tokenomics_versions WHERE id=?", (vid,))
     if not r:
         raise HTTPException(404)
-    db.ex("UPDATE tokenomics_versions SET is_current=0 WHERE token_uid=?", (r["token_uid"],))
-    db.ex("UPDATE tokenomics_versions SET is_current=1 WHERE id=?", (vid,))
+    with db.tx():
+        db.ex("UPDATE tokenomics_versions SET is_current=0 WHERE token_uid=?", (r["token_uid"],))
+        db.ex("UPDATE tokenomics_versions SET is_current=1 WHERE id=?", (vid,))
     return {"ok": True}
 
 
@@ -533,19 +614,27 @@ def watch_add(uid: str, payload: dict = Body(default={})):
     st = (payload or {}).get("status") or "watching"
     if st not in WATCH_STATUSES:
         raise HTTPException(400, "неизвестный статус")
-    ex = db.q1("SELECT * FROM watchlist WHERE token_uid=?", (uid,))
-    if ex:
-        db.ex("UPDATE watchlist SET status=?, note=COALESCE(?, note) WHERE token_uid=?", (st, (payload or {}).get("note"), uid))
-    else:
-        db.ex("INSERT INTO watchlist(token_uid,added_at,note,status) VALUES(?,?,?,?)", (uid, now_iso(), (payload or {}).get("note"), st))
-    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "watch", st, now_iso()))
+    note = (payload or {}).get("note")
+    with db.tx() as c:
+        if not c.execute("SELECT 1 FROM tokens WHERE uid=?", (uid,)).fetchone():
+            raise HTTPException(404, "токен не найден")
+        ex = c.execute("SELECT status FROM watchlist WHERE token_uid=?", (uid,)).fetchone()
+        if ex and ex["status"] == st and note is None:
+            return {"ok": True, "unchanged": True}
+        if ex:
+            c.execute("UPDATE watchlist SET status=?, note=COALESCE(?, note) WHERE token_uid=?", (st, note, uid))
+        else:
+            c.execute("INSERT INTO watchlist(token_uid,added_at,note,status) VALUES(?,?,?,?)", (uid, now_iso(), note, st))
+        c.execute("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "watch", st, now_iso()))
     return {"ok": True}
 
 
 @app.delete("/api/watchlist/{uid:path}")
 def watch_del(uid: str):
-    db.ex("DELETE FROM watchlist WHERE token_uid=?", (uid,))
-    db.ex("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "unwatch", None, now_iso()))
+    with db.tx() as c:
+        cur = c.execute("DELETE FROM watchlist WHERE token_uid=?", (uid,))
+        if cur.rowcount:
+            c.execute("INSERT INTO user_actions(token_uid,action,details,at) VALUES(?,?,?,?)", (uid, "unwatch", None, now_iso()))
     return {"ok": True}
 
 

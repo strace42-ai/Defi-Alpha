@@ -120,6 +120,7 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
                     continue
                 errors.append(str(ex_))
                 break
+            batch = []
             for kind, logs in (("mint", mints), ("burn", burns)):
                 for lg in logs:
                     topics = lg.get("topics") or []
@@ -132,13 +133,12 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
                     amount = int(data, 16)  # целые минимальные единицы
                     if int(lg["blockNumber"], 16) < prev_to:
                         seen_overlap.add((lg["transactionHash"], int(lg["logIndex"], 16)))
-                    db.get_conn().execute(
-                        "INSERT OR IGNORE INTO supply_events(token_uid,kind,tx_hash,log_index,block,counterparty,amount_raw,amount) "
-                        "VALUES(?,?,?,?,?,?,?,?)",
-                        (uid, kind, lg["transactionHash"], int(lg["logIndex"], 16), int(lg["blockNumber"], 16), cp,
-                         str(amount), float(to_decimal(amount, decimals))))  # amount — только для отображения
+                    batch.append((uid, kind, lg["transactionHash"], int(lg["logIndex"], 16), int(lg["blockNumber"], 16), cp,
+                                  str(amount), float(to_decimal(amount, decimals))))  # amount — только для отображения
                     n += 1
-            db.get_conn().commit()
+            # запись — после сетевых запросов, пакетами (INSERT OR IGNORE: повторное чтение диапазона не создаёт дублей)
+            db.exmany("INSERT OR IGNORE INTO supply_events(token_uid,kind,tx_hash,log_index,block,counterparty,amount_raw,amount) "
+                      "VALUES(?,?,?,?,?,?,?,?)", batch, chunk=1000)
             a = e + 1
         return a
 
@@ -146,17 +146,16 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
     nxt = fetch(rescan_from, head)
     if nxt >= prev_to and prev_to > rescan_from:
         # события в перекрытии, которых больше нет в каноничной цепи, помечаются orphaned (не удаляются)
-        c = db.get_conn()
-        rows_ov = c.execute("SELECT tx_hash, log_index FROM supply_events WHERE token_uid=? AND block>=? AND block<? AND orphaned=0",
-                            (uid, rescan_from, prev_to)).fetchall()
-        orphans = [(t, li) for t, li in rows_ov if (t, li) not in seen_overlap]
-        for t, li in orphans:
-            c.execute("UPDATE supply_events SET orphaned=1 WHERE token_uid=? AND tx_hash=? AND log_index=?", (uid, t, li))
-        for t, li in c.execute("SELECT tx_hash, log_index FROM supply_events WHERE token_uid=? AND orphaned=1 AND block>=? AND block<?",
-                               (uid, rescan_from, prev_to)).fetchall():
-            if (t, li) in seen_overlap:  # событие снова в каноничной цепи
-                c.execute("UPDATE supply_events SET orphaned=0 WHERE token_uid=? AND tx_hash=? AND log_index=?", (uid, t, li))
-        c.commit()
+        with db.tx() as c:  # только SQL; сеть уже завершена
+            rows_ov = c.execute("SELECT tx_hash, log_index FROM supply_events WHERE token_uid=? AND block>=? AND block<? AND orphaned=0",
+                                (uid, rescan_from, prev_to)).fetchall()
+            orphans = [(t, li) for t, li in rows_ov if (t, li) not in seen_overlap]
+            c.executemany("UPDATE supply_events SET orphaned=1 WHERE token_uid=? AND tx_hash=? AND log_index=?",
+                          [(uid, t, li) for t, li in orphans])
+            back = [(uid, t, li) for t, li in c.execute(
+                "SELECT tx_hash, log_index FROM supply_events WHERE token_uid=? AND orphaned=1 AND block>=? AND block<?",
+                (uid, rescan_from, prev_to)).fetchall() if (t, li) in seen_overlap]  # событие снова в каноничной цепи
+            c.executemany("UPDATE supply_events SET orphaned=0 WHERE token_uid=? AND tx_hash=? AND log_index=?", back)
         if orphans:
             errors.append(f"реорганизация: {len(orphans)} событий в перекрытии больше не подтверждаются — помечены orphaned")
     db.set_progress(pkey_to, str(max(nxt, prev_to)))
@@ -311,18 +310,20 @@ def _timestamps(rpc: Any, uid: str, head: int, head_ts: int) -> None:
     if len(refs) == 1:
         refs.append((head, head_ts))
     exact = dict(refs)
-    c = db.get_conn()
-    for (bnum,) in c.execute("SELECT DISTINCT block FROM supply_events WHERE token_uid=? AND ts IS NULL", (uid,)).fetchall():
+    upd = []
+    for r_ in db.q("SELECT DISTINCT block FROM supply_events WHERE token_uid=? AND ts IS NULL", (uid,)):
+        bnum = r_["block"]
         if bnum in exact:
-            c.execute("UPDATE supply_events SET ts=?, ts_source='block' WHERE token_uid=? AND block=?", (iso(from_ts(exact[bnum])), uid, bnum))
+            upd.append((iso(from_ts(exact[bnum])), "block", uid, bnum))
             continue
         j = 0
         while j < len(refs) - 2 and refs[j + 1][0] < bnum:
             j += 1
         (b0, t0), (b1, t1) = refs[j], refs[j + 1]
         t = t0 + (bnum - b0) * ((t1 - t0) / (b1 - b0) if b1 != b0 else 0)
-        c.execute("UPDATE supply_events SET ts=?, ts_source='interpolated' WHERE token_uid=? AND block=?", (iso(from_ts(t)), uid, bnum))
-    c.commit()
+        upd.append((iso(from_ts(t)), "interpolated", uid, bnum))
+    # расчёт — вне транзакции; запись — пакетами по 1000 (короткие транзакции, между ними пишут другие очереди)
+    db.exmany("UPDATE supply_events SET ts=?, ts_source=? WHERE token_uid=? AND block=?", upd, chunk=1000)
 
 
 def _week_boundaries(rpc: Any, uid: str, head: int, head_ts: int) -> None:
