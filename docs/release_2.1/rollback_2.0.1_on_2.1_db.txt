@@ -1,0 +1,4 @@
+Код 2.0.1 (коммит 08278d0) на копии базы, где модули 2.1 включались (таблицы an_* и address_roles присутствуют):
+  init_db: {'existed': True, 'from_version': 2, 'to_version': 2, 'backup': None}
+  токенов 789, решений фильтров 3805, лучших 3, integrity_check ok
+  таблицы 2.1 сохранены: {'an_results': 686, 'an_state': 173, 'an_runs': 5, 'address_roles': 0}

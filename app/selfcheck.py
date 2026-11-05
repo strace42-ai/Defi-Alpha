@@ -83,6 +83,22 @@ def main() -> int:
     else:
         out["stress_error"] = (r.stdout[-2000:] + r.stderr[-2000:])
         print("  стресс-тест не выполнился:\n" + out["stress_error"])
+    # ---- 2.1: тот же стресс-тест с включённой аналитикой (сравнение нагрузки на котировки и источники)
+    print("\nТот же стресс-тест с включёнными аналитическими модулями 2.1 (60 с)…")
+    rep2 = Path(tempfile.mkdtemp()) / "stress_an.json"
+    subprocess.run([sys.executable, str(script), "--seconds", "60", "--tokens", "300", "--events", "20000", "--fault-rate", "0",
+                    "--analytics", "--label", "selfcheck+analytics", "--report", str(rep2)], capture_output=True, text=True, timeout=600)
+    if rep2.exists():
+        a = json.loads(rep2.read_text(encoding="utf-8"))
+        out["stress_analytics"] = a
+        ok2 = (a["unhandled_count"] == 0 and all(a["lanes_alive"].values()) and a["integrity_check"] == "ok"
+               and a["metrics"].get("http_from_analytics_lane", 0) == 0)
+        out["stress_analytics_ok"] = ok2
+        base = out.get("stress") or {}
+        print(f"  котировок выполнено: без аналитики {base.get('tasks_done', {}).get('fast')} / с аналитикой {a['tasks_done'].get('fast')}; "
+              f"запросов к источникам из очереди аналитики: {a['metrics'].get('http_from_analytics_lane', 0)} (должно быть 0)")
+        print(f"  проходов аналитики: {(a.get('analytics') or {}).get('runs')}; необработанных исключений: {a['unhandled_count']}")
+        print("  РЕЗУЛЬТАТ: " + ("ПРОЙДЕН" if ok2 else "ЕСТЬ ПРОБЛЕМЫ — передайте файл отчёта на проверку"))
     # ---- автотесты
     try:
         import pytest  # noqa: F401
@@ -99,7 +115,7 @@ def main() -> int:
     f = config.DATA_DIR / f"selfcheck-{now_utc().strftime('%Y%m%d-%H%M%S')}.json"
     f.write_text(json.dumps(out, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     print(f"\nОтчёт сохранён: {f}")
-    return 0 if out.get("stress_ok") and (not isinstance(out.get("pytest"), dict) or out["pytest"]["returncode"] == 0) else 1
+    return 0 if out.get("stress_ok") and out.get("stress_analytics_ok", True) and (not isinstance(out.get("pytest"), dict) or out["pytest"]["returncode"] == 0) else 1
 
 
 if __name__ == "__main__":

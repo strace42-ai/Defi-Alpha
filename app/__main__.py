@@ -80,7 +80,14 @@ def main() -> None:
     ap.add_argument("--import-db", default=None, help="перенести прежнюю базу (путь к data\\scanner.db); оригинал не изменяется")
     ap.add_argument("--rollback-import", action="store_true", help="отменить последний перенос базы")
     ap.add_argument("--new-db", action="store_true", help="начать с новой пустой базы, даже если найдена прежняя установка")
+    ap.add_argument("--analytics-off", action="store_true",
+                    help="выключить оба аналитических модуля 2.1 (данные сканера и результаты аналитики сохраняются)")
     args = ap.parse_args()
+    if args.analytics_off:
+        s0 = config.load_settings()
+        s0.setdefault("analytics", {}).update(momentum_enabled=False, emission_enabled=False)
+        config.save_settings(s0)
+        print("  Аналитические модули 2.1 выключены. Сканер работает как в 2.0.1; база не изменена.")
     setup_logging()
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     lock = InstanceLock(config.DATA_DIR / "scanner.lock")

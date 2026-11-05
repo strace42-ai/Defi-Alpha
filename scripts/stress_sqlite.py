@@ -34,6 +34,7 @@ ap.add_argument("--report", default="")
 ap.add_argument("--tokens", type=int, default=800)
 ap.add_argument("--events", type=int, default=20000)
 ap.add_argument("--label", default="")
+ap.add_argument("--analytics", action="store_true", help="2.1: включить оба аналитических модуля и непрерывно ставить их расчёт (с force)")
 args = ap.parse_args()
 
 CODE = Path(args.code_dir).resolve()
@@ -130,6 +131,8 @@ def route(req: httpx.Request) -> httpx.Response:
     u = str(req.url)
     with LOCK:
         M["http_requests"] += 1
+        if threading.current_thread().name == "das-analytics":
+            M["http_from_analytics_lane"] += 1
     if rnd.random() < 0.01:
         return httpx.Response(503)
     if rnd.random() < 0.005:
@@ -221,6 +224,9 @@ def build_db():
     s["rate_limits_per_min"] = {k: 1200 for k in s["rate_limits_per_min"]}
     s["chains_enabled"] = ["robinhood"]
     s["intervals_min"]["discovery"] = 1
+    if args.analytics:
+        s.setdefault("analytics", {}).update(momentum_enabled=True, emission_enabled=True,
+                                             interval_min={"momentum": 0.2, "emission": 0.2})
     config.save_settings(s)
     c = sqlite3.connect(str(db.DB_PATH))
     big = dumps({"gt": {"price_usd": 0.04}, "pools": {"items": [{"address": "0x1", "price_usd": 0.04, "liquidity_usd": 1e5}] * 20},
@@ -279,6 +285,9 @@ def driver_tasks(r):
             r.submit("protocols", 2)
         if rnd.random() < 0.05:
             r.submit("backup", 4)
+        if args.analytics:  # наихудший случай: полный пересчёт без учёта неизменности входных данных
+            r.submit("analytics", 6, module="momentum", force=True)
+            r.submit("analytics", 6, module="emission", force=True)
     return f
 
 
@@ -348,6 +357,16 @@ def lock_probe():
         STOP.wait(1.0)
 
 
+def _an_stats(c):
+    try:
+        runs = c.execute("SELECT module, COUNT(*), SUM(processed), SUM(recomputed), SUM(errors) FROM an_runs GROUP BY module").fetchall()
+        st = c.execute("SELECT module, last_status, COUNT(*) FROM an_state GROUP BY module, last_status").fetchall()
+        return {"runs": [list(r) for r in runs], "state": [list(r) for r in st],
+                "results": c.execute("SELECT COUNT(*) FROM an_results").fetchone()[0]}
+    except sqlite3.Error as e:
+        return {"error": str(e)}
+
+
 def main():
     first, n_ev = build_db()
     threading.excepthook = lambda a: UNHANDLED.append(f"{a.thread.name}: {a.exc_type.__name__}: {a.exc_value}")
@@ -398,6 +417,7 @@ def main():
            "events_without_ts": null_ts, "inflight_at_stop": inflight, "unfinished_after_wait": still, "scanned_to_block": to_block, "jobs_by_status": jobs_err, "error_log_rows": errlog,
            "error_log_locked": locked_in_log, "latency_ms": lat,
            "tx_stats": dict(getattr(db, "tx_stats", {}) or {}) or "нет (версия без транзакционного слоя)",
+           "analytics": _an_stats(c) if args.analytics else None,
            "task_errors": dict(Counter((j or "?") for (j,) in c.execute("SELECT job FROM jobs WHERE status='error'").fetchall()))}
     print(json.dumps(res, ensure_ascii=False, indent=1))
     if args.report:
