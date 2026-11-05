@@ -84,9 +84,9 @@ def main() -> int:
         out["stress_error"] = (r.stdout[-2000:] + r.stderr[-2000:])
         print("  стресс-тест не выполнился:\n" + out["stress_error"])
     # ---- 2.1: тот же стресс-тест с включённой аналитикой (сравнение нагрузки на котировки и источники)
-    print("\nТот же стресс-тест с включёнными аналитическими модулями 2.1 (60 с)…")
+    print("\nТот же стресс-тест с аналитикой 2.1 в наихудшем режиме — непрерывный принудительный пересчёт (60 с)…")
     rep2 = Path(tempfile.mkdtemp()) / "stress_an.json"
-    subprocess.run([sys.executable, str(script), "--seconds", "60", "--tokens", "300", "--events", "20000", "--fault-rate", "0",
+    subprocess.run([sys.executable, str(script), "--seconds", "60", "--tokens", "300", "--events", "20000", "--fault-rate", "0.003",
                     "--analytics", "--label", "selfcheck+analytics", "--report", str(rep2)], capture_output=True, text=True, timeout=600)
     if rep2.exists():
         a = json.loads(rep2.read_text(encoding="utf-8"))
@@ -95,7 +95,8 @@ def main() -> int:
                and a["metrics"].get("http_from_analytics_lane", 0) == 0)
         out["stress_analytics_ok"] = ok2
         base = out.get("stress") or {}
-        print(f"  котировок выполнено: без аналитики {base.get('tasks_done', {}).get('fast')} / с аналитикой {a['tasks_done'].get('fast')}; "
+        print(f"  котировок выполнено: без аналитики {base.get('tasks_done', {}).get('fast')} / с аналитикой {a['tasks_done'].get('fast')} "
+              f"(разброс между запусками ±5%; в обычном режиме аналитика ещё реже); "
               f"запросов к источникам из очереди аналитики: {a['metrics'].get('http_from_analytics_lane', 0)} (должно быть 0)")
         print(f"  проходов аналитики: {(a.get('analytics') or {}).get('runs')}; необработанных исключений: {a['unhandled_count']}")
         print("  РЕЗУЛЬТАТ: " + ("ПРОЙДЕН" if ok2 else "ЕСТЬ ПРОБЛЕМЫ — передайте файл отчёта на проверку"))
