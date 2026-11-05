@@ -23,7 +23,8 @@ from .util import dumps, loads, now_iso
 
 log = logging.getLogger("das.analytics")
 
-MODULES = {"momentum": "Фундаментальный импульс", "emission": "Эмиссионное давление"}
+MODULES = {"momentum": "Фундаментальный импульс", "emission": "Эмиссионное давление",
+           "fables": "FABLES: атрибуция эмиссии (этап 2)"}
 SCHEMA_VERSION = 1
 
 SCHEMA = """
@@ -195,6 +196,9 @@ def set_enabled(module: str, on: bool) -> dict:
         raise ValueError(module)
     if on:
         ensure_schema()
+        if module == "fables":
+            from . import fables_indexer
+            fables_indexer.ensure_schema()
     s = config.load_settings()
     s.setdefault("analytics", {})[f"{module}_enabled"] = bool(on)
     config.save_settings(s)
@@ -232,6 +236,8 @@ def _impl(module: str):
         from . import momentum as m
     elif module == "emission":
         from . import emission_pressure as m
+    elif module == "fables":
+        from . import fables_emission as m
     else:
         raise ValueError(module)
     return m
@@ -388,8 +394,29 @@ def plan(runner, sub: Callable[..., None]) -> None:
     for m in mods:
         iv = float((s.get("interval_min") or {}).get(m, 60)) * 60
         if time.monotonic() - _last_submit.get(m, -1e12) >= iv:
+            if m == "fables":
+                # индексатор делает RPC-запросы: уступает основному ончейн-модулю (общий источник «rpc»)
+                ch = runner.lanes.get("chain")
+                if ch is not None and (ch.current is not None or ch.size() > 0):
+                    _deferred.update(count=_deferred["count"] + 1, last_at=now_iso(),
+                                     reason="очередь ончейн-задач занята — индексатор FABLES отложен")
+                    continue
+                _last_submit[m] = time.monotonic()
+                sub("fables_index", 6)
+                continue
             _last_submit[m] = time.monotonic()
             sub("analytics", 6, module=m)
+
+
+def fables_task(prog) -> dict:
+    """Задание индексатора FABLES: сначала сетевой сбор событий (свой бюджет), затем расчёт без сети."""
+    if not enabled("fables"):
+        return {"skipped": "модуль выключен"}
+    from . import fables_indexer
+    from .jobs import runner
+    idx = fables_indexer.run(prog=prog, stop=runner.stop_flag)
+    calc = run_module("fables", prog=prog, stop=runner.stop_flag)
+    return {"index": idx, "calc": calc}
 
 
 def task(prog, module: str, uid: str | None = None, force: bool = False) -> dict:

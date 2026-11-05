@@ -176,3 +176,13 @@ def recompute(payload: dict = Body(...)):
     from .jobs import runner
     jid = runner.submit("analytics", 2, module=m, uid=payload.get("uid"), force=True)
     return {"queued": jid is not None}
+
+
+@router.get("/fables")
+def fables_view():
+    """Этап 2 (релиз A): атрибуция эмиссии FABLES — последний расчёт и состояние индексатора (только чтение)."""
+    from . import fables as F, fables_indexer
+    r = analytics.latest("fables", F.TOKEN_UID) if analytics.schema_present() else None
+    return {"enabled": analytics.enabled("fables"), "latest": r, "indexer": fables_indexer.status(),
+            "history": analytics.history("fables", F.TOKEN_UID, 20), "token_uid": F.TOKEN_UID,
+            "explorer_addr": "https://robinhoodchain.blockscout.com/address/{address}", "explorer_tx": "https://robinhoodchain.blockscout.com/tx/{tx}"}

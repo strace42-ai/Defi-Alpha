@@ -1,6 +1,6 @@
 {
   "_about": "Исследовательские записи с указанием источника, внесённые вручную 2026-11-04. Это НЕ сгенерированные данные: каждое значение сопровождается ссылкой и типом источника. Их можно отключить/исправить в карточке проекта. Регрессионные примеры — не эталон правильного результата.",
-  "seed_version": 2,
+  "seed_version": 3,
   "tokens": [
     {
       "chain": "robinhood",
@@ -150,6 +150,101 @@
               {
                 "date": "2027-04-20T00:00:00Z",
                 "amount": "начало вестинга 40M команды",
+                "note": "оценка: клифф 6 мес. от запуска; точная дата не опубликована"
+              }
+            ]
+          }
+        },
+        {
+          "version_label": "v3 (05.11.2026, проверено по контрактам)",
+          "published_at": "2026-11-05",
+          "source_type": "onchain",
+          "is_current": false,
+          "source_url": "https://www.fables.fi/docs (таблица контрактов) + Emission stream 0x4aA54fA62bC8f6052fB4D3494A3fA79741Bda14c (WeeklyBudgetSet)",
+          "note": "Не текущая по умолчанию: включается вручную («сделать текущей»), чтобы не менять поведение существующих вкладок без вашего решения. Отличия от v2: эпохи — вторник 00:00 UTC (Escrow.epochStart, Stream.startAt), а не 22:00; бюджеты недель 3–4 пересмотрены контрактом (блок 103 492 334), добавлены недели 5–8; LP-награды минтятся в кошелёк при claim (не на gauge).",
+          "params": {
+            "max_supply": 1000000000,
+            "emissions_allocation": 500000000,
+            "epoch_rule": "неделя w начинается в w·604800 + 432000 (вторник 00:00 UTC); неделя 2963 = 2026-10-20 00:00 UTC; проверено Escrow.epochStart(t)",
+            "first_epoch_note": "начисление эмиссии с 22:00 UTC 20.10.2026 (первый корень потока asOf 23:00) — первая неделя фактически 6 дн. 2 ч",
+            "weekly_budgets": [
+              {
+                "week": 1,
+                "epoch": 2963,
+                "start": "2026-10-20T00:00:00Z",
+                "amount": 10000000
+              },
+              {
+                "week": 2,
+                "epoch": 2964,
+                "start": "2026-10-27T00:00:00Z",
+                "amount": 9800000
+              },
+              {
+                "week": 3,
+                "epoch": 2965,
+                "start": "2026-11-03T00:00:00Z",
+                "amount": 9860292,
+                "revised_from": 9604000
+              },
+              {
+                "week": 4,
+                "epoch": 2966,
+                "start": "2026-11-10T00:00:00Z",
+                "amount": 9663086,
+                "revised_from": 9411920
+              },
+              {
+                "week": 5,
+                "epoch": 2967,
+                "start": "2026-11-17T00:00:00Z",
+                "amount": 9469825
+              },
+              {
+                "week": 6,
+                "epoch": 2968,
+                "start": "2026-11-24T00:00:00Z",
+                "amount": 9280428
+              },
+              {
+                "week": 7,
+                "epoch": 2969,
+                "start": "2026-12-01T00:00:00Z",
+                "amount": 9094819
+              },
+              {
+                "week": 8,
+                "epoch": 2970,
+                "start": "2026-12-08T00:00:00Z",
+                "amount": 8912923
+              }
+            ],
+            "budget_source": "Emission stream: события WeeklyBudgetSet(week, amount); значение — последнее записанное",
+            "budget_rule_market": "бюджет рынка на неделю ≤ 5 × (eligible staked fees + incentives) (документация); eligible fees — без wash trading и self-dealing",
+            "rebase": "8% от заработанного стейкнутыми LP за неделю, пока заблокировано ≤ 30% FABLES (документация); минтится потоком и вносится в ve-лок",
+            "operating_contribution": "компания получает 1% от полученного LP за неделю, из потолка Emissions (документация); отдельных выпусков не наблюдается",
+            "allocations_onchain": {
+              "0": "Emissions 500M",
+              "1": "Community (Points) 120M",
+              "2": "PROLOGUE 25M",
+              "3": "Team lock 40M",
+              "4": "40M (Team vesting или Operations)",
+              "5": "Ecosystem 80M",
+              "6": "Strategic reserve 75M",
+              "7": "Grants 50M",
+              "8": "40M (Team vesting или Operations)",
+              "9": "Liquidity 30M"
+            },
+            "emission_recipient_kinds": [],
+            "emission_attribution": "по записи Minter: Minted(allocation, to, amount, by); LP — claim из Emission stream в кошелёк",
+            "team": "40M: veFABLES Lock #1 владельца Team Safe, unlock = PERMANENT (состояние контракта); 40M вестинг — не выпущен",
+            "seeder_liquidity": 15000000,
+            "prologue_reserve": 25000000,
+            "points_allocation": "≈67.06M: 24.69M ликвидно, 20.90M в 6-мес. локах, 21.48M Auto-max (документация); claims закрываются 2026-11-21 00:00 UTC (Minter.claimsCloseAt)",
+            "unlocks": [
+              {
+                "amount": "начало вестинга 40M команды",
+                "date": "2027-04-20T00:00:00Z",
                 "note": "оценка: клифф 6 мес. от запуска; точная дата не опубликована"
               }
             ]

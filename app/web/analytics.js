@@ -16,29 +16,29 @@
   const unk = r => `<span class="muted">${esc(r || "неизвестно")}</span>`;
   const tokLink = (uid, sym) => `<a href="#/token/${encodeURIComponent(uid)}"><b>${esc(sym || "?")}</b></a>`;
 
-  async function moduleBar(module, st) {
+  async function moduleBar(module, st, sfx = "") {
     const m = st.modules[module];
     const lr = m.last_run;
     return `<div class="card"><div class="toolbar">
       <b>${esc(m.name)}</b> ${m.enabled ? '<span class="fb ev-c">включён</span>' : '<span class="fb ev-u">выключен</span>'}
-      <button id="anToggle" data-m="${module}" data-on="${m.enabled ? 1 : 0}">${m.enabled ? "Выключить модуль" : "Включить модуль"}</button>
-      <button id="anRecalc" ${m.enabled ? "" : "disabled"}>Пересчитать</button>
-      <button id="anReload">Обновить</button>
+      <button id="anToggle${sfx}" data-m="${module}" data-on="${m.enabled ? 1 : 0}">${m.enabled ? "Выключить модуль" : "Включить модуль"}</button>
+      <button id="anRecalc${sfx}" ${m.enabled ? "" : "disabled"}>Пересчитать</button>
+      <button id="anReload${sfx}">Обновить</button>
       <span class="small muted">${lr ? `последний проход ${dt(lr.finished_at)}: обработано ${lr.processed}, пересчитано ${lr.recomputed}, без изменений ${lr.unchanged}, ошибок ${lr.errors}${lr.stopped_reason ? " · " + esc(lr.stopped_reason) : ""}` : "ещё не выполнялся"}
       ${st.deferred && st.deferred.count ? ` · откладывался ${st.deferred.count} раз (${esc(st.deferred.reason || "")})` : ""}</span></div>
       <div class="small muted">Модуль работает в отдельной очереди с низким приоритетом, использует только уже собранные данные (сетевых запросов нет)
       и пишет результаты в собственные таблицы. Выключение мгновенно прекращает планирование; данные сканера не затрагиваются.</div></div>`;
   }
-  function bindBar(module, rerender) {
-    $("#anToggle").onclick = async () => {
-      const on = $("#anToggle").dataset.on !== "1";
+  function bindBar(module, rerender, sfx = "") {
+    $("#anToggle" + sfx).onclick = async () => {
+      const on = $("#anToggle" + sfx).dataset.on !== "1";
       if (on && !confirm("Включить модуль? Будут созданы отдельные таблицы аналитики; данные сканера не изменяются.")) return;
       await api("/api/analytics/settings", { method: "POST", body: { module, enabled: on } });
       toast(on ? "Модуль включён, первый расчёт поставлен в очередь «аналитика»" : "Модуль выключен; новые задания не планируются");
       setTimeout(rerender, on ? 1500 : 0);
     };
-    $("#anRecalc").onclick = async () => { await api("/api/analytics/recompute", { method: "POST", body: { module } }); toast("Пересчёт поставлен в очередь"); setTimeout(rerender, 2000); };
-    $("#anReload").onclick = rerender;
+    $("#anRecalc" + sfx).onclick = async () => { await api("/api/analytics/recompute", { method: "POST", body: { module } }); toast("Пересчёт поставлен в очередь"); setTimeout(rerender, 2000); };
+    $("#anReload" + sfx).onclick = rerender;
   }
 
   /* ---------------- Фундаментальный импульс ---------------- */
@@ -145,8 +145,10 @@
         стартовые аллокации (Genesis), LP-эмиссию, неизвестные выпуски, чистый выпуск по эпохам и использование недельного бюджета.</p>
         <p class="small muted">Неподтверждённые категории остаются UNKNOWN. Получение наград, ve-блокировки и продажи — этапы 2–3, сейчас показываются как неизвестные.</p></div>` : ""}
       ${d.rows.length ? `<div class="toolbar"><label class="small">Токен <select id="eTok">${d.rows.map(r => `<option value="${esc(r.token_uid)}" ${r.token_uid === uid ? "selected" : ""}>${esc(r.symbol)} (${esc(r.chain)})</option>`).join("")}</select></label></div>` : ""}
+      <div id="fDetail"></div>
       <div id="eDetail"></div>`;
     bindBar("emission", rerender);
+    fablesBlock(st, rerender);
     if ($("#eTok")) $("#eTok").onchange = () => { location.hash = "#/emission/" + encodeURIComponent($("#eTok").value); };
     if (uid) emissionDetail(uid);
   }
@@ -247,6 +249,65 @@
       try { await api("/api/analytics/roles", { method: "POST", body: { ...fd, chain, token_uid: uid, source_type: "user" } }); toast("Роль добавлена, пересчёт поставлен в очередь"); setTimeout(() => emissionDetail(uid), 2000); } catch { }
     };
     el.querySelectorAll("[data-deact]").forEach(b => b.onclick = async () => { await api(`/api/analytics/roles/${b.dataset.deact}/deactivate`, { method: "POST", body: {} }); toast("Роль отключена"); rolesBlock(uid, r); });
+  }
+
+
+  /* ---------------- этап 2, релиз A: FABLES — атрибуция по записи Minter ---------------- */
+  const FCAT = { GENESIS_TEAM: "#c9a227", GENESIS_SEEDER: "#199e70", LP_EMISSION: "#3987e5", REBASE: "#7b5bd6", POINTS_LIQUID: "#2bb0c9",
+    POINTS_LOCKED: "#1f6f8b", PROLOGUE: "#d95926", OPERATING_EMISSION: "#a0a09a", UNKNOWN: "#6b6b66", BURN: "#555" };
+  async function fablesBlock(st, rerender) {
+    const el = $("#fDetail"); if (!el || !st.modules.fables) return;
+    const d = await api("/api/analytics/fables");
+    const r = d.latest && d.latest.result, ix = d.indexer || {};
+    const exA = a => link(d.explorer_addr.replace("{address}", a), short(a)), exT = h => link(d.explorer_tx.replace("{tx}", h), short(h));
+    let h = `<h2>FABLES: атрибуция эмиссии по контрактам (этап 2, релиз A)</h2>${await moduleBar("fables", st, "F")}
+      <div class="small muted">Индексатор делает RPC-запросы к публичному узлу Robinhood Chain с собственными лимитами (вызовы, время, темп) и уступает основному ончейн-модулю.
+      Категория каждого выпуска берётся из записи самого Minter — Minted(allocation, to, amount, by) — и события Claimed потока в той же транзакции.</div>`;
+    if (ix.schema_present) h += `<div class="small">Индекс: до блока ${num(ix.head)} · событий: ${Object.entries(ix.events || {}).map(([k, v]) => `${esc(k)} ${num(v)}`).join(", ")} · помечено как исчезнувшие при реорганизации: ${num(ix.orphaned)} · эпох с точной границей: ${num(ix.epochs)}</div>`;
+    if (!r) { el.innerHTML = h + '<div class="card muted">Расчёта ещё нет: включите модуль; первый сбор истории займёт несколько заданий.</div>'; bindBar("fables", rerender, "F"); return; }
+    const rc = r.reconciliation, t = r.totals;
+    h += `<div class="card"><b>Сверка</b> ${rc.exact ? '<span class="fb ev-c">точная</span>' : '<span class="fb ev-e">не полная</span>'} ·
+        записей Minter: ${num(rc.minted_events)} на ${tok(rc.minted_events_total)} FABLES ·
+        Minter.totalMinted() на блоке ${num(rc.contract_totalMinted_block)}: ${tok(rc.contract_totalMinted)} (события до этого блока: ${tok(rc.events_total_at_that_block)}) ·
+        mint основного сканера сверено: ${num(rc.supply_matched)} из ${num(rc.supply_mints_checked)} (до блока ${num(rc.checked_to_block)});
+        без записи Minter: ${num(rc.supply_without_minted_n)}; запись Minter без перевода: ${num(rc.minted_without_transfer_n)} · классифицировано ${t.classified_pct != null ? t.classified_pct.toFixed(2) + "%" : "н/д"}
+        ${(r.limitations || []).map(x => `<div class="small sev-medium">${esc(x)}</div>`).join("")}</div>
+      <div class="grid g2"><div class="card"><h3>Выпуск по категориям</h3><table><tr><th>Категория</th><th class="num">FABLES</th><th class="num">Доля</th><th class="num">Выпусков</th><th class="num">Получателей</th><th>Доказательность</th></tr>
+        ${r.categories.map(c => `<tr><td><span style="color:${FCAT[c.key] || "#888"}">■</span> ${esc(c.name)}</td><td class="num">${tok(c.amount)}</td><td class="num">${c.share_pct != null ? c.share_pct.toFixed(2) + "%" : ""}</td><td class="num">${num(c.events)}</td><td class="num">${num(c.recipients)}</td><td>${ev(c.evidence)}</td></tr>`).join("")}</table></div>
+      <div class="card"><h3>Распределения Minter (ончейн)</h3><table><tr><th>#</th><th>Название</th><th class="num">Потолок</th><th class="num">Выпущено (контракт)</th><th class="num">По событиям</th></tr>
+        ${r.allocations.map(a => `<tr><td>${a.index}</td><td class="small" title="${esc(a.naming)}">${esc(a.name)}</td><td class="num">${tok(a.ceiling)}</td><td class="num">${tok(a.minted_contract)}</td><td class="num">${tok(a.minted_events)}</td></tr>`).join("")}</table>
+        <div class="small muted">Номер распределения — ончейн; название — по совпадению потолка ceilingOf(i) с документацией (наведите курсор — основание).</div></div></div>
+      <h3>Эпохи (вторник 00:00 UTC, по формуле контракта) и бюджет</h3><div class="card" style="overflow-x:auto"><table><tr><th>Неделя</th><th>Период UTC</th><th>Блоки</th><th>Состояние</th><th class="num">Бюджет потока</th>
+        <th class="num">Начислено потоком</th><th class="num">Закрыто (контракт)</th><th>Использование: весь поток</th><th>LP / rebase / операц.</th><th class="num">Выпущено LP-claim</th><th class="num">Rebase</th><th class="num">Points</th></tr>
+        ${r.epochs.map(e => { const u = e.utilization_total_stream, m = e.minted_by_category || {};
+          return `<tr><td>${e.week}</td><td class="small">${esc(e.start.slice(0, 16))} — ${esc(e.end.slice(0, 16))}${e.first_week_note ? `<div class="muted">${esc(e.first_week_note)}</div>` : ""}</td>
+          <td class="small">${num(e.start_block)}–${e.end_block ? num(e.end_block) : "…"}</td><td>${ev({ complete: "complete", in_progress: "in_progress", unconfirmed: "unconfirmed" }[e.state])}</td>
+          <td class="num">${tok(e.budget_effective)}${e.budget_history.length > 1 ? `<div class="small muted">изменялся ${e.budget_history.length} раз; на начало: ${tok(e.budget_at_start)}</div>` : ""}</td>
+          <td class="num">${tok(e.accrued_stream)}</td><td class="num">${tok(e.closed_total)}</td>
+          <td>${esc(u.status)} ${u.value_pct != null ? u.value_pct.toFixed(1) + "%" : u.accrued_pct != null ? "(начислено " + u.accrued_pct.toFixed(1) + "%)" : ""}<div class="small muted">${esc(u.scope || u.reason || "")}</div>${u.warning ? `<div class="small sev-high">${esc(u.warning)}</div>` : ""}</td>
+          <td class="small">${esc(e.utilization_lp.status)} / ${esc(e.utilization_rebase.status)} / ${esc(e.utilization_operating.status)}</td>
+          <td class="num">${tok(m.LP_EMISSION)}</td><td class="num">${tok(m.REBASE)}</td><td class="num">${tok(m.POINTS_LIQUID)} + ${tok(m.POINTS_LOCKED)}</td></tr>`; }).join("")}</table>
+        <div class="small muted">«Начислено потоком» — разница накопленного итога корней потока (RootPosted.asOf) на границах недели; «Закрыто» — WeeksClosed.
+          LP-claim минтятся при получении, с запаздыванием — это не начисление недели. Разбиение начисления на LP / rebase / операционную долю контракт не публикует — UNKNOWN.</div></div>`;
+    const tl = r.investigations.team_lock, pl = r.investigations.points_locked;
+    h += `<div class="grid g2"><div class="card"><h3>Расследование: 40 000 000 команды</h3>
+        <div>${tl.chain_confirmed ? '<span class="fb ev-c">цепочка подтверждена событиями</span>' : '<span class="fb ev-e">подтверждена не полностью</span>'} ${esc(tl.chain_note)}</div>
+        <div class="small">Mint: ${tl.mint.tx ? exT(tl.mint.tx) : "—"} · блок ${num(tl.mint.block)} · вызвал ${tl.creation_tx.from ? exA(tl.creation_tx.from) : "—"} (selector ${esc(tl.creation_tx.selector || "")})</div>
+        <ol class="small">${(tl.creation_tx.steps || []).map(s => `<li>${esc(s.what)} ${s.amount ? tok(s.amount) : ""}</li>`).join("")}</ol>
+        <div class="kv"><div>Владелец Lock #1 (блок ${num(tl.current.block)})</div><div>${tl.current.owner ? exA(tl.current.owner) : "—"}</div>
+          <div>Заблокировано сейчас</div><div>${tok(tl.current.locked)} <span class="small muted">(больше 40M на rebase)</span></div>
+          <div>Режим</div><div>${tl.current.permanent ? "PERMANENT (unlock = максимум uint64)" : esc(tl.current.unlock_raw || "—")}</div>
+          <div>Выводы (Withdrawn)</div><div>${num((tl.withdrawn || []).length)}</div></div>
+        <div class="small muted">${esc(tl.withdraw_note)}</div></div>
+      <div class="card"><h3>Расследование: Points-блокировки (≈ 40,4 млн)</h3><table><tr><th>Контракт</th><th class="num">Выпусков</th><th class="num">Выпущено на сам контракт</th><th class="num">Переведено в escrow</th><th class="num">Куда-то ещё</th><th class="num">Остаток</th><th></th></tr>
+        ${Object.values(pl).map(p => `<tr><td class="small">${esc(p.docs)}<div class="mono">${exA(p.address)}</div></td><td class="num">${num(p.mints)}</td><td class="num">${tok(p.minted_to_itself)}</td><td class="num">${tok(p.transferred_to_escrow)}</td><td class="num">${tok(p.transferred_elsewhere)}</td><td class="num">${tok(p.balance_now)}</td><td>${p.role_confirmed ? ev("confirmed") : ev("partial")}</td></tr>`).join("")}</table>
+        <div class="small muted">${esc((Object.values(pl)[0] || {}).note || "")}</div></div></div>
+      <h3>Реестр официальных контрактов</h3><div class="card" style="overflow-x:auto"><table><tr><th>Ключ</th><th>Адрес (полный)</th><th>В документации</th><th>Тип по коду</th><th class="num">Код, байт</th><th>Связи (проверено)</th><th>Доказательность</th></tr>
+        ${r.investigations.registry.map(x => `<tr><td>${esc(x.key)}</td><td class="mono small">${esc(x.address)}</td><td class="small">${esc(x.docs_name)}</td><td class="small">${esc(x.kind_detected || "—")}</td><td class="num">${num(x.code_bytes)}</td>
+          <td class="small">${(x.relations || []).map(esc).join("<br>")}${x.note ? `<div class="muted">${esc(x.note)}</div>` : ""}</td><td>${ev(x.evidence)}</td></tr>`).join("")}</table>
+        <div class="small muted">Chain ID 4663. Verified source/ABI в обозревателе не проверены: Blockscout из облачной сети закрыт Cloudflare; ABI взяты из официального сайта.</div></div>`;
+    el.innerHTML = h;
+    bindBar("fables", rerender, "F");
   }
 
   /* ---------------- сводка в карточке токена ---------------- */

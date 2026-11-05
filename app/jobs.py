@@ -29,11 +29,11 @@ JOB_NAMES = {"scan": "Сканирование", "discover": "Новые пул�
              "deep": "Углублённый анализ", "fund": "Фундаментал", "onchain": "Ончейн", "cg": "CoinGecko",
              "chain_health": "Метрики сети", "refresh": "Обновление кандидатов", "fundamentals": "Фундаментал (все)",
              "token": "Анализ токена", "backup": "Резервная копия", "weekly": "Недельный снимок",
-             "reevaluate": "Пересчёт фильтров", "protocols": "Список протоколов", "analytics": "Аналитика 2.1"}
+             "reevaluate": "Пересчёт фильтров", "protocols": "Список протоколов", "analytics": "Аналитика 2.1", "fables_index": "Индексатор FABLES"}
 LANE_OF = {"quotes": "fast", "discover": "main", "backfill": "main", "deep": "main", "fund": "main", "chain_health": "main",
            "protocols": "main", "scan": "main", "refresh": "main", "fundamentals": "main", "weekly": "main", "token": "main",
            "onchain": "chain", "cg": "aux", "backup": "aux", "reevaluate": "aux",
-           "analytics": "analytics"}  # 2.1: отдельная очередь — аналитика не занимает очереди сбора данных
+           "analytics": "analytics", "fables_index": "analytics"}  # 2.1: отдельная очередь — аналитика не занимает очереди сбора данных
 NO_LOG = {"quotes"}  # частые задачи не засоряют журнал заданий
 SOURCES_OF = {"quotes": ["dexscreener"], "discover": ["geckoterminal"], "backfill": ["geckoterminal", "defillama"],
               "deep": ["geckoterminal"], "fund": ["defillama"], "chain_health": ["defillama"], "cg": ["coingecko"],
@@ -422,6 +422,11 @@ def job_backup(prog) -> dict:
     return {"path": str(backup.make_backup())}
 
 
+def t_fables_index(prog) -> dict:
+    from . import analytics
+    return analytics.fables_task(prog)
+
+
 def t_analytics(prog, module: str, uid: str | None = None, force: bool = False) -> dict:
     from . import analytics
     return analytics.task(prog, module, uid=uid, force=force)
@@ -440,7 +445,7 @@ TASKS: dict[str, Callable] = {
     "discover": t_discover, "backfill": t_backfill, "quotes": t_quotes, "deep": t_deep, "fund": t_fund, "onchain": t_onchain,
     "cg": t_cg, "chain_health": t_chain_health, "protocols": t_protocols, "scan": job_scan, "refresh": job_refresh,
     "fundamentals": job_fundamentals, "weekly": job_weekly, "token": job_token, "backup": job_backup, "reevaluate": job_reevaluate,
-    "analytics": t_analytics,
+    "analytics": t_analytics, "fables_index": t_fables_index,
 }
 JOBS = TASKS  # совместимость
 

@@ -61,7 +61,7 @@ DEFAULTS: dict[str, Any] = {
     "analytics": {
         "momentum_enabled": False,
         "emission_enabled": False,
-        "interval_min": {"momentum": 60, "emission": 30},   # не чаще; пересчёт — только если изменились входные данные
+        "interval_min": {"momentum": 60, "emission": 30, "fables": 15},   # не чаще; пересчёт — только если изменились входные данные
         "task_max_seconds": 20,          # бюджет времени одного аналитического задания
         "pause_ratio": 6.0,              # после расчёта токена — пауза = N × время расчёта (аналитике ≤ 1/(N+1) процессорного времени)
         "defer_if_backlog": 60,          # задачи котировок+обнаружения в очереди больше — аналитика откладывается
@@ -70,6 +70,10 @@ DEFAULTS: dict[str, Any] = {
         "wash_turnover_per_day": 3.0,     # объём/TVL в сутки выше — предупреждение о возможной накрутке
         "alerts": True,
         "keep_results_per_token": 60,
+        # 2.2 (этап 2): ограниченный индексатор FABLES — делает RPC-запросы; выключен по умолчанию
+        "fables_enabled": False,
+        "fables": {"rpc_calls_per_job": 40, "job_seconds": 60, "rpc_per_min": 30, "reorg_overlap_blocks": 20000,
+                   "max_log_range": 1000000, "verify_every_blocks": 400000},
     },
     "top_candidates_n": 30,
     "queue_max_per_lane": 300,
