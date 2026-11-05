@@ -1,0 +1,33 @@
+Код: v2.0.1 (рабочая копия), тесты: tests/test_v201_regressions.py
+.........................                                                [100%]
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED tests/test_v201_regressions.py::test_p01_failed_status_write_does_not_leave_open_transaction
+PASSED tests/test_v201_regressions.py::test_p01_exception_inside_write_rolls_back
+PASSED tests/test_v201_regressions.py::test_p01_connections_never_hold_implicit_transactions
+PASSED tests/test_v201_regressions.py::test_p01_worker_survives_failing_job_status_write
+PASSED tests/test_v201_regressions.py::test_p01_log_error_never_raises
+PASSED tests/test_v201_regressions.py::test_p01_bulk_writes_are_chunked
+PASSED tests/test_v201_regressions.py::test_p02_api_down_keeps_ath
+PASSED tests/test_v201_regressions.py::test_p02_empty_history_keeps_ath
+PASSED tests/test_v201_regressions.py::test_p02_pools_unavailable_keeps_price_and_ath
+PASSED tests/test_v201_regressions.py::test_p02_higher_new_ath_replaces
+PASSED tests/test_v201_regressions.py::test_p02_shorter_history_with_lower_ath_does_not_erase
+PASSED tests/test_v201_regressions.py::test_p02_more_complete_history_recomputes
+PASSED tests/test_v201_regressions.py::test_p03_link_kept_when_catalog_temporarily_empty
+PASSED tests/test_v201_regressions.py::test_p03_link_removed_only_on_evidence_of_change
+PASSED tests/test_v201_regressions.py::test_p03_failed_metrics_keep_previous_protocol
+PASSED tests/test_v201_regressions.py::test_p05_hide_is_atomic_with_user_action
+PASSED tests/test_v201_regressions.py::test_p05_repeated_actions_do_not_duplicate
+PASSED tests/test_v201_regressions.py::test_p05_monitoring_toggle_persists_and_errors_are_reported
+PASSED tests/test_v201_regressions.py::test_p04_detects_previous_installation_and_does_not_create_db
+PASSED tests/test_v201_regressions.py::test_p04_import_previous_db_with_backup_counts_integrity_and_rollback
+PASSED tests/test_v201_regressions.py::test_p04_fresh_install_without_previous_reports_new_empty_db
+PASSED tests/test_v201_regressions.py::test_p01_malformed_auxiliary_response_does_not_abort_analysis
+PASSED tests/test_v201_regressions.py::test_p01_backup_does_not_block_writers
+PASSED tests/test_v201_regressions.py::test_p04_existing_small_db_reports_richer_installation
+PASSED tests/test_v201_regressions.py::test_p01_interrupted_onchain_job_timestamps_are_filled_on_next_pass
+25 passed in 2.69s
+
+Полный набор:
+114 passed in 6.58s

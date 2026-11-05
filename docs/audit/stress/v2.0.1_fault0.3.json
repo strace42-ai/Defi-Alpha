@@ -1,0 +1,130 @@
+{
+ "label": "v2.0.1 (после исправления), инъекция 0.3%",
+ "code": "рабочая копия 2.0.1",
+ "python": "3.13.18",
+ "sqlite": "3.53.1",
+ "duration_s": 187.9,
+ "tokens": 801,
+ "events_initial": 20001,
+ "fault_rate": 0.003,
+ "metrics": {
+  "http_requests": 4258,
+  "injected_write_faults": 125,
+  "user_ok:hide": 174,
+  "user_ok:read_best": 174,
+  "user_ok:unhide": 172,
+  "user_ok:read_tokens": 408,
+  "user_ok:read_token": 408,
+  "user_ok:read_live": 408,
+  "user_ok:watch_add": 140,
+  "user_ok:monitoring_toggle": 27,
+  "user_fail:unhide": 2
+ },
+ "unhandled_thread_exceptions": [],
+ "unhandled_count": 0,
+ "lanes_alive": {
+  "fast": true,
+  "main": true,
+  "chain": true,
+  "aux": true
+ },
+ "scheduler_alive": true,
+ "tasks_done": {
+  "fast": 305,
+  "main": 201,
+  "chain": 66,
+  "aux": 313
+ },
+ "integrity_check": "ok",
+ "events_expected_in_scanned_range": 20003,
+ "events_lost": 0,
+ "events_duplicated": 0,
+ "events_without_ts": 0,
+ "inflight_at_stop": {
+  "fast": "quotes",
+  "main": "deep",
+  "chain": "onchain"
+ },
+ "unfinished_after_wait": {},
+ "scanned_to_block": 106001777,
+ "jobs_by_status": {
+  "done": 529,
+  "error": 49,
+  "queued": 205,
+  "running": 2
+ },
+ "error_log_rows": 93,
+ "error_log_locked": 93,
+ "latency_ms": {
+  "probe_write_wait": {
+   "n": 178,
+   "p50": 5.8,
+   "p95": 36.5,
+   "max": 231.3
+  },
+  "hide": {
+   "n": 174,
+   "p50": 7.2,
+   "p95": 56.6,
+   "max": 153.2
+  },
+  "read_best": {
+   "n": 174,
+   "p50": 22.9,
+   "p95": 76.8,
+   "max": 239.4
+  },
+  "unhide": {
+   "n": 174,
+   "p50": 5.9,
+   "p95": 27.5,
+   "max": 193.6
+  },
+  "read_tokens": {
+   "n": 408,
+   "p50": 98.4,
+   "p95": 254.6,
+   "max": 937.9
+  },
+  "read_token": {
+   "n": 408,
+   "p50": 29.9,
+   "p95": 156.2,
+   "max": 868.8
+  },
+  "read_live": {
+   "n": 408,
+   "p50": 11.9,
+   "p95": 39.6,
+   "max": 133.9
+  },
+  "watch_add": {
+   "n": 140,
+   "p50": 7.1,
+   "p95": 56.1,
+   "max": 123.9
+  },
+  "monitoring_toggle": {
+   "n": 27,
+   "p50": 8.5,
+   "p95": 68.4,
+   "max": 80.5
+  }
+ },
+ "tx_stats": {
+  "count": 30370,
+  "max_ms": 236.6,
+  "max_where": "onchain.py:140 fetch",
+  "slow": 0,
+  "rollbacks": 125,
+  "lock_timeouts": 0,
+  "busy": 0
+ },
+ "task_errors": {
+  "discover": 7,
+  "deep": 27,
+  "cg": 8,
+  "fund": 6,
+  "onchain": 1
+ }
+}

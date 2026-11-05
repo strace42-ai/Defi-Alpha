@@ -1,0 +1,129 @@
+{
+ "label": "v2.0.0 (до исправления), инъекция 0.3%",
+ "code": "копия исходников 2.0.0 (коммит 73fd3f8)",
+ "python": "3.13.18",
+ "sqlite": "3.53.1",
+ "duration_s": 183.4,
+ "tokens": 801,
+ "events_initial": 20001,
+ "fault_rate": 0.003,
+ "metrics": {
+  "http_requests": 4383,
+  "user_ok:read_tokens": 400,
+  "user_ok:hide": 197,
+  "user_ok:read_best": 197,
+  "user_ok:read_token": 400,
+  "user_ok:read_live": 400,
+  "user_ok:unhide": 197,
+  "injected_write_faults": 195,
+  "user_ok:watch_add": 139,
+  "user_ok:monitoring_toggle": 27,
+  "driver_error:tasks:OperationalError": 1,
+  "user_exception:watch_add:OperationalError": 2,
+  "user_fail:watch_add": 2
+ },
+ "unhandled_thread_exceptions": [
+  "das-aux: OperationalError: database is locked (injected)"
+ ],
+ "unhandled_count": 1,
+ "lanes_alive": {
+  "fast": true,
+  "main": true,
+  "chain": true,
+  "aux": false
+ },
+ "scheduler_alive": true,
+ "tasks_done": {
+  "fast": 313,
+  "main": 214,
+  "chain": 96,
+  "aux": 139
+ },
+ "integrity_check": "ok",
+ "events_expected_in_scanned_range": 20003,
+ "events_lost": 0,
+ "events_duplicated": 0,
+ "events_without_ts": 1281,
+ "inflight_at_stop": {
+  "fast": "quotes",
+  "main": "deep",
+  "chain": "onchain",
+  "aux": "cg"
+ },
+ "unfinished_after_wait": {
+  "aux": "cg"
+ },
+ "scanned_to_block": 106001813,
+ "jobs_by_status": {
+  "done": 315,
+  "error": 134,
+  "queued": 312
+ },
+ "error_log_rows": 167,
+ "error_log_locked": 167,
+ "latency_ms": {
+  "probe_write_wait": {
+   "n": 179,
+   "p50": 1.2,
+   "p95": 37.9,
+   "max": 234.5
+  },
+  "read_tokens": {
+   "n": 400,
+   "p50": 98.2,
+   "p95": 264.4,
+   "max": 417.1
+  },
+  "hide": {
+   "n": 197,
+   "p50": 9.6,
+   "p95": 63.2,
+   "max": 229.2
+  },
+  "read_best": {
+   "n": 197,
+   "p50": 23.4,
+   "p95": 99.4,
+   "max": 182.1
+  },
+  "read_token": {
+   "n": 400,
+   "p50": 25.0,
+   "p95": 151.4,
+   "max": 499.0
+  },
+  "read_live": {
+   "n": 400,
+   "p50": 12.8,
+   "p95": 55.6,
+   "max": 112.5
+  },
+  "unhide": {
+   "n": 197,
+   "p50": 7.7,
+   "p95": 22.6,
+   "max": 129.8
+  },
+  "watch_add": {
+   "n": 141,
+   "p50": 8.6,
+   "p95": 32.5,
+   "max": 62.0
+  },
+  "monitoring_toggle": {
+   "n": 27,
+   "p50": 9.8,
+   "p95": 60.6,
+   "max": 86.0
+  }
+ },
+ "tx_stats": "нет (версия без транзакционного слоя)",
+ "task_errors": {
+  "discover": 4,
+  "onchain": 79,
+  "deep": 39,
+  "protocols": 2,
+  "fund": 6,
+  "cg": 4
+ }
+}

@@ -16,6 +16,14 @@ from app.util import dumps, loads, now_iso
 RH = CHAINS["robinhood"]
 
 
+
+def _bulk_insert(sql, rows):
+    """Вставка тестовых данных отдельным соединением (не зависит от API слоя записи — тест запускается и на 2.0.0)."""
+    c_ = sqlite3.connect(str(db.DB_PATH), timeout=10)
+    with c_:
+        c_.executemany(sql, rows)
+    c_.close()
+
 def tok(addr="0x" + "4" * 40, facts=None, **cols):
     uid, _ = discovery.upsert_token(RH, {"address": addr, "symbol": "TST"}, source="test", reason="synthetic")
     if facts is not None:
@@ -350,8 +358,8 @@ def test_p01_backup_does_not_block_writers():
     """Резервное копирование (sqlite backup API) идёт параллельно с записью: писатели не ждут его окончания."""
     from app import backup
     uid = tok()
-    db.exmany("INSERT INTO supply_events(token_uid,kind,tx_hash,log_index,block,amount_raw,amount,ts) VALUES(?,?,?,?,?,?,?,?)",
-              [(uid, "mint", f"0x{i:064x}", 0, i, "1" * 30, 1.0, now_iso()) for i in range(40000)], chunk=5000)
+    _bulk_insert("INSERT INTO supply_events(token_uid,kind,tx_hash,log_index,block,amount_raw,amount,ts) VALUES(?,?,?,?,?,?,?,?)",
+              [(uid, "mint", f"0x{i:064x}", 0, i, "1" * 30, 1.0, now_iso()) for i in range(40000)])
     waits = []
     done = threading.Event()
 
@@ -389,7 +397,7 @@ def test_p01_interrupted_onchain_job_timestamps_are_filled_on_next_pass():
     from app import onchain
     uid = tok()
     rows = [(uid, "mint", "0x%064x" % b, 0, b, None, "0x" + "ab" * 20, str(10 ** 18), 1.0) for b in range(1000, 300_000, 100)]
-    db.exmany("INSERT INTO supply_events(token_uid,kind,tx_hash,log_index,block,ts,counterparty,amount_raw,amount) "
+    _bulk_insert("INSERT INTO supply_events(token_uid,kind,tx_hash,log_index,block,ts,counterparty,amount_raw,amount) "
               "VALUES(?,?,?,?,?,?,?,?,?)", rows)
 
     class R:
