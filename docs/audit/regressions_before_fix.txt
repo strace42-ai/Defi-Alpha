@@ -1,0 +1,11 @@
+FAILED tests/test_audit_regressions.py::test_audit1_confirmed_4m_secondary_8m_is_not_pass
+FAILED tests/test_audit_regressions.py::test_audit1_all_sources_below_limit_pass_and_wording
+FAILED tests/test_audit_regressions.py::test_audit2_no_site_no_socials_no_llama_is_unknown
+FAILED tests/test_audit_regressions.py::test_audit3_tvl_only_is_not_pass - As...
+FAILED tests/test_audit_regressions.py::test_audit3_tvl_plus_one_metric_not_confirmed
+FAILED tests/test_audit_regressions.py::test_audit4_integer_sums_exact - sqli...
+FAILED tests/test_audit_regressions.py::test_audit4_large_values_no_float_loss
+FAILED tests/test_audit_regressions.py::test_audit4_week_budget_uses_confirmed_block_boundaries
+FAILED tests/test_audit_regressions.py::test_audit4_week_without_confirmed_boundaries_unverified
+FAILED tests/test_audit_regressions.py::test_audit4_exact_block_at_boundary
+10 failed, 5 passed in 0.46s

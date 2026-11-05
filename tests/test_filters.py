@@ -79,8 +79,8 @@ def test_mcap_sources_straddle_limit_unknown():
     f = facts(mcap_candidates=[
         {"kind": "circulating_official", "value": 4e6, "confidence": "confirmed", "label": "a", "source": "p"},
         {"kind": "coingecko_via_gt", "value": 6e6, "confidence": "reported", "label": "b", "source": "gt"}])
-    # подтверждённый источник имеет приоритет над reported
-    assert F.f_mcap(f, 5e6)["status"] == "PASS"
+    # исправлено по аудиту: подтверждённый источник НЕ перекрывает противоречащий (было PASS — ошибка)
+    assert F.f_mcap(f, 5e6)["status"] == "UNKNOWN"
     f2 = facts(mcap_candidates=[
         {"kind": "coingecko_via_gt", "value": 4e6, "confidence": "reported", "label": "a", "source": "gt"},
         {"kind": "ds_reported", "value": 6e6, "confidence": "reported", "label": "b", "source": "ds"}])
@@ -132,7 +132,7 @@ def test_utility():
     r = F.f_utility(linked, [], "token")
     assert r["status"] == "PASS" and r["values"]["value_capture_risks"]
     empty = F.f_utility({}, [], "token")
-    assert empty["status"] == "FAIL"
+    assert empty["status"] == "UNKNOWN"  # исправлено по аудиту: нет следов в индексах ≠ доказательство отсутствия продукта
     site_only = F.f_utility({"links": {"websites": ["https://x.io"], "socials": []}}, [], "token")
     assert site_only["status"] == "UNKNOWN"  # сайт сам по себе не доказывает продукт
     assert F.f_utility({}, [], "tokenized_stock")["status"] == "FAIL"

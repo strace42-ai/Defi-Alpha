@@ -1,0 +1,326 @@
+{
+  "token": {
+    "uid": "robinhood:0xb63d07cef74be747231d601bb2faa6b252c68106",
+    "chain": "Robinhood Chain",
+    "chain_id": 4663,
+    "address": "0xb63d07CEf74bE747231d601bb2FAa6B252c68106",
+    "symbol": "FABLES",
+    "decimals": 18
+  },
+  "exported_at_utc": "2026-11-05T02:26:51Z",
+  "source": "локальная база DeFi Alpha Scanner; данные получены через JSON-RPC https://rpc.mainnet.chain.robinhood.com (eth_getLogs, eth_call, eth_getBlockByNumber)",
+  "scan": {
+    "from_block": 63731771,
+    "to_block_exclusive": 106387177,
+    "events": 20587,
+    "minted_raw": "146827769516183445362352418",
+    "burned_raw": "0",
+    "minted_tokens": "146827769.516183445362352418",
+    "burned_tokens": "0"
+  },
+  "reconciliation": {
+    "total_supply_raw": "146827769516183445362352418",
+    "reconstructed_raw_from_csv_rows": "146827769516183445362352418",
+    "exact_match": true,
+    "diff_raw": "0",
+    "total_supply_read_at_block": 106387176,
+    "method": "eth_call totalSupply() на блоке 106387176"
+  },
+  "first_mint": {
+    "block": 92991320,
+    "ts": "2026-10-19T23:09:39Z",
+    "ts_source": "block",
+    "tx": "0xf348e670923efca939b1d92adcc11baf27a232a8f7940c207364bb251dd0ca43"
+  },
+  "time_sources": {
+    "block": 5,
+    "interpolated": 20582
+  },
+  "week_boundaries": {
+    "2026-10-20T22:00:00Z": {
+      "block": 93780221,
+      "prev_block_ts": "2026-10-20T21:59:59Z",
+      "ts": "2026-10-20T22:00:00Z"
+    },
+    "2026-10-27T22:00:00Z": {
+      "block": 99573136,
+      "prev_block_ts": "2026-10-27T21:59:59Z",
+      "ts": "2026-10-27T22:00:00Z"
+    },
+    "2026-11-03T22:00:00Z": {
+      "block": 105394490,
+      "prev_block_ts": "2026-11-03T21:59:59Z",
+      "ts": "2026-11-03T22:00:00Z"
+    }
+  },
+  "budget_comparison": [
+    {
+      "week": 1,
+      "start": "2026-10-20T22:00:00Z",
+      "budget": 10000000,
+      "budget_raw": "10000000000000000000000000",
+      "start_block": 93780221,
+      "end_block": 99573136,
+      "boundary_source": "block_timestamps",
+      "minted_all_raw": "85015432821622171391390320",
+      "minted_to_emission_contracts_raw": "0",
+      "minted_all": 85015432.82162218,
+      "minted_to_emission_contracts": 0.0,
+      "in_progress": false,
+      "over_budget": null,
+      "labels_missing": true,
+      "note": "границы недели — точные блоки по timestamp блоков; бюджет — потолок эмиссии, а не выпущенное количество; minted_all включает все mint"
+    },
+    {
+      "week": 2,
+      "start": "2026-10-27T22:00:00Z",
+      "budget": 9800000,
+      "budget_raw": "9800000000000000000000000",
+      "start_block": 99573136,
+      "end_block": 105394490,
+      "boundary_source": "block_timestamps",
+      "minted_all_raw": "5374636489397524274252960",
+      "minted_to_emission_contracts_raw": "0",
+      "minted_all": 5374636.489397524,
+      "minted_to_emission_contracts": 0.0,
+      "in_progress": false,
+      "over_budget": null,
+      "labels_missing": true,
+      "note": "границы недели — точные блоки по timestamp блоков; бюджет — потолок эмиссии, а не выпущенное количество; minted_all включает все mint"
+    },
+    {
+      "week": 3,
+      "start": "2026-11-03T22:00:00Z",
+      "budget": 9604000,
+      "budget_raw": "9604000000000000000000000",
+      "start_block": 105394490,
+      "end_block": null,
+      "boundary_source": "block_timestamps",
+      "minted_all_raw": "1366534753668549696709138",
+      "minted_to_emission_contracts_raw": "0",
+      "minted_all": 1366534.7536685497,
+      "minted_to_emission_contracts": 0.0,
+      "in_progress": true,
+      "over_budget": null,
+      "labels_missing": true,
+      "note": "границы недели — точные блоки по timestamp блоков; бюджет — потолок эмиссии, а не выпущенное количество; minted_all включает все mint"
+    },
+    {
+      "week": 4,
+      "start": "2026-11-10T22:00:00Z",
+      "budget": 9411920,
+      "budget_raw": "9411920000000000000000000",
+      "start_block": null,
+      "end_block": null,
+      "boundary_source": null,
+      "minted_all_raw": null,
+      "minted_to_emission_contracts_raw": null,
+      "minted_all": null,
+      "minted_to_emission_contracts": null,
+      "in_progress": true,
+      "over_budget": null,
+      "labels_missing": true,
+      "note": "границы недели не подтверждены timestamp блоков — сравнение не выполняется; бюджет — потолок эмиссии, а не выпущенное количество; minted_all включает все mint"
+    }
+  ],
+  "top_recipients": [
+    {
+      "address": "0x3c1672c615ef1f966a1cbcc37f924586a5a3d422",
+      "amount": 40000000.0,
+      "amount_raw": "40000000000000000000000000",
+      "label": "minter() токена (наблюдение ончейн)",
+      "kind": "minter",
+      "label_source": "eth_call minter() 2026-11-04",
+      "note": null
+    },
+    {
+      "address": "0x28097735d5d78499c08d7bf89810b28f59299015",
+      "amount": 21390016.104,
+      "amount_raw": "21390016104000000000000000",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x95d9a51fc8ee8c7b05d552842cd5bc0a17d53a59",
+      "amount": 19035010.8128,
+      "amount_raw": "19035010812800000000000000",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x385bc909ca7efd34788216ea97346d3ba75c94de",
+      "amount": 15088495.232264021,
+      "amount_raw": "15088495232264020607779322",
+      "label": "Seeder Safe (2/3) — ликвидность запуска 15M",
+      "kind": "treasury",
+      "label_source": "https://www.fables.fi/docs/token",
+      "note": null
+    },
+    {
+      "address": "0xf4c3b5f85773b16c9e1460cc45fd71d0b302aabc",
+      "amount": 1247724.6946580566,
+      "amount_raw": "1247724694658056658228040",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x86adce3344e0b7a33aa8dfe80076a2ce5faa535b",
+      "amount": 921017.6441912988,
+      "amount_raw": "921017644191298721944873",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x111b808b4b63f1f933f2563d0e3cb166faff50be",
+      "amount": 720637.6761115284,
+      "amount_raw": "720637676111528369222280",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0xc2e2063b468fe3e63316c85d2af36adf9b4d5c80",
+      "amount": 706174.1756480602,
+      "amount_raw": "706174175648060219608541",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x290c82b7bc7e4a9f0d01cffcac575dfba0e27456",
+      "amount": 692735.583598961,
+      "amount_raw": "692735583598960961949254",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x2187f16f2d82da53581a2f48ebcffd415d68c997",
+      "amount": 637811.0924254862,
+      "amount_raw": "637811092425486173740306",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0xd57056275a348e7c71dd80c8ddf6d82b1c808749",
+      "amount": 590131.9639938658,
+      "amount_raw": "590131963993865792592990",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0xf3db790e68c555bf6246569732a00cd7add38fa5",
+      "amount": 576514.3856429893,
+      "amount_raw": "576514385642989282939158",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0xd22ac13eb45a59477744318e1ae2acb0ec1769ab",
+      "amount": 545906.5920493181,
+      "amount_raw": "545906592049318164338258",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x7c9457a775015eee6e098cb1a4ba6cf9b0fdf3c0",
+      "amount": 541417.8476660715,
+      "amount_raw": "541417847666071469841328",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0xcde8e2606ec4f8f822d48a7d491092aef8ed81b8",
+      "amount": 465027.6098891613,
+      "amount_raw": "465027609889161336396329",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0xb73812cce6f5cb7ada40a134b4b16aefbdbb9472",
+      "amount": 436424.1895691291,
+      "amount_raw": "436424189569129102363333",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x82fc58011d50bfda0dd10bbecab41803a7758939",
+      "amount": 426815.1008608907,
+      "amount_raw": "426815100860890716483914",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x02eca8cc78b7d30c1ac5e16988ed2c8a9da658d6",
+      "amount": 409478.7994308,
+      "amount_raw": "409478799430800000000000",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x72f829c5ca3554aa48e33df913ad60817ce57bd1",
+      "amount": 400613.88718724344,
+      "amount_raw": "400613887187243419214175",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    },
+    {
+      "address": "0x13b04c2b29c33dafcdbe9faa857d1818ecc625f7",
+      "amount": 395260.69832704,
+      "amount_raw": "395260698327040000000000",
+      "label": null,
+      "kind": null,
+      "label_source": null,
+      "note": "неизвестный адрес — не считать командой без доказательств"
+    }
+  ],
+  "tokenomics_version": {
+    "id": 2,
+    "version_label": "v2 (20.10.2026, запуск)",
+    "published_at": "2026-10-20",
+    "source_url": "https://www.fables.fi/docs/token",
+    "source_type": "official_docs"
+  },
+  "csv": {
+    "file": "supply_events.csv",
+    "rows": 20587,
+    "sha256": "7c62c57e14b8aecbbb1f167e6728f94fc5bc23df72cce6ecbab387d3ca707b10"
+  },
+  "limitations": [
+    "time_source=interpolated: время события интерполировано между опорными блоками; используется только для графиков по дням",
+    "границы недельных бюджетов определены точно по timestamp блоков (первый блок с ts ≥ границы, проверен соседний блок)",
+    "события с нестандартным форматом Transfer (data ≠ 32 байта) не интерпретируются",
+    "метки адресов — только из документации проекта и наблюдения minter(); неизвестный адрес ≠ адрес команды"
+  ]
+}

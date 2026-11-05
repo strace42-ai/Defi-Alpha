@@ -1,0 +1,17 @@
+tests/test_audit_regressions.py::test_audit1_confirmed_4m_secondary_8m_is_not_pass PASSED
+tests/test_audit_regressions.py::test_audit1_all_sources_below_limit_pass_and_wording PASSED
+tests/test_audit_regressions.py::test_audit1_all_sources_above_limit_fail PASSED
+tests/test_audit_regressions.py::test_audit1_not_evidence_sources_ignored PASSED
+tests/test_audit_regressions.py::test_audit2_no_site_no_socials_no_llama_is_unknown PASSED
+tests/test_audit_regressions.py::test_audit2_tokenized_stock_still_fails PASSED
+tests/test_audit_regressions.py::test_audit2_manual_fail_still_fails PASSED
+tests/test_audit_regressions.py::test_audit3_tvl_only_is_not_pass PASSED
+tests/test_audit_regressions.py::test_audit3_tvl_plus_one_metric_not_confirmed PASSED
+tests/test_audit_regressions.py::test_audit3_full_metrics_confirmed_pass PASSED
+tests/test_audit_regressions.py::test_audit4_integer_sums_exact PASSED
+tests/test_audit_regressions.py::test_audit4_large_values_no_float_loss PASSED
+tests/test_audit_regressions.py::test_audit4_week_budget_uses_confirmed_block_boundaries PASSED
+tests/test_audit_regressions.py::test_audit4_week_without_confirmed_boundaries_unverified PASSED
+tests/test_audit_regressions.py::test_audit4_exact_block_at_boundary PASSED
+tests/test_audit_regressions.py::test_audit5_export_and_independent_verify PASSED
+============================== 16 passed in 0.39s ==============================

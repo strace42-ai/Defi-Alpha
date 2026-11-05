@@ -9,7 +9,7 @@ set "PY="
 where py >nul 2>nul && set "PY=py -3"
 if not defined PY where python >nul 2>nul && set "PY=python"
 if not defined PY goto :nopython
-%PY% -c "import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)" >nul 2>nul
+%PY% -c "import sys; sys.exit(0 if sys.version_info>=(3,11) else 1)" >nul 2>nul
 if errorlevel 1 goto :oldpython
 
 rem --- 2. Локальное окружение (создаётся один раз в папке .venv)
@@ -40,14 +40,14 @@ exit /b 0
 
 :nopython
 echo [ОШИБКА] Не найден Python.
-echo Установите Python 3.10 или новее: https://www.python.org/downloads/
+echo Установите Python 3.11 или новее: https://www.python.org/downloads/
 echo При установке отметьте галочку "Add python.exe to PATH".
 echo Либо выполните в PowerShell: winget install -e --id Python.Python.3.12
 pause
 exit /b 1
 
 :oldpython
-echo [ОШИБКА] Установлен слишком старый Python. Нужна версия 3.10 или новее.
+echo [ОШИБКА] Установлен слишком старый Python. Нужна версия 3.11 или новее.
 echo Скачать: https://www.python.org/downloads/
 pause
 exit /b 1

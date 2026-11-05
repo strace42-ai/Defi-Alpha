@@ -1,6 +1,23 @@
-fastapi>=0.110
-uvicorn>=0.29
-httpx>=0.27
-openpyxl>=3.1
-pytest>=8.0
-respx>=0.21
+# Зафиксированные версии (проверено 2026-11-05: установка в чистое окружение, 60 тестов).
+# Прямые зависимости
+fastapi==0.162.0
+uvicorn==0.54.0
+httpx==0.28.1
+openpyxl==3.1.5
+# Транзитивные зависимости (зафиксированы для воспроизводимости)
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.16.0
+certifi==2026.10.23
+click==8.5.0
+et_xmlfile==2.0.0
+h11==0.16.0
+httpcore==1.0.9
+idna==3.20
+opentelemetry-api==1.45.2
+pydantic==2.14.2
+pydantic_core==2.50.2
+starlette==1.10.0
+typing-inspection==0.4.5
+typing_extensions==4.16.0
+colorama==0.4.6; sys_platform == "win32"

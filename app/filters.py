@@ -128,21 +128,28 @@ def f_mcap(facts: dict, limit: float) -> dict:
     vals = {"limit": limit, "fdv_total": fdv_total, "fdv_max": fdv_max}
     confirmed = [c for c in cands if c["confidence"] == "confirmed"]
     reported = [c for c in cands if c["confidence"] == "reported"]
-    usable = confirmed or reported
-    conflict = facts.get("mcap_conflict")
+    # учитываются ВСЕ пригодные источники: подтверждённый источник НЕ перекрывает противоречащий ему вторичный
+    usable = confirmed + reported
     if usable:
         vs = [c["value"] for c in usable]
         lo, hi = min(vs), max(vs)
-        vals.update({"mcap_low": lo, "mcap_high": hi})
+        below = [c for c in usable if c["value"] <= limit]
+        above = [c for c in usable if c["value"] > limit]
+        vals.update({"mcap_low": lo, "mcap_high": hi, "sources_below": len(below), "sources_above": len(above)})
         conf = "confirmed" if confirmed else "preliminary"
-        if hi <= limit:
+        multi = len(usable) > 1
+        if not above:
             return R("mcap", PASS, f"Circulating MCAP {fmt_usd(lo)}–{fmt_usd(hi)} ≤ {fmt_usd(limit)}"
-                     + (" (источники расходятся, оба ниже лимита)" if conflict else ""), confidence=conf, evidence=ev, values=vals)
-        if lo > limit:
-            return R("mcap", FAIL, f"Circulating MCAP {fmt_usd(lo)}–{fmt_usd(hi)} > {fmt_usd(limit)}", confidence=conf,
-                     evidence=ev, values=vals)
-        return R("mcap", UNKNOWN, f"Источники расходятся относительно лимита: {fmt_usd(lo)} vs {fmt_usd(hi)}",
-                 evidence=ev, values=vals, needs=["Сверить circulating supply по официальным данным"])
+                     + (f" (все источники ниже лимита: {len(usable)})" if multi else ""),
+                     confidence=conf, evidence=ev, values=vals)
+        if not below:
+            return R("mcap", FAIL, f"Circulating MCAP {fmt_usd(lo)}–{fmt_usd(hi)} > {fmt_usd(limit)}"
+                     + (f" (все источники выше лимита: {len(usable)})" if multi else ""),
+                     confidence=conf, evidence=ev, values=vals)
+        lab = lambda cs: ", ".join(f"{c['label']} {fmt_usd(c['value'])} [{c['confidence']}]" for c in cs)
+        return R("mcap", UNKNOWN, f"Источники по разные стороны лимита {fmt_usd(limit)}: ниже — {lab(below)}; "
+                 f"выше — {lab(above)}", evidence=ev, values=vals,
+                 needs=["Сверить circulating supply и цену по первоисточникам; выяснить причину расхождения"])
     # нет данных о circulating: FDV(totalSupply) — верхняя граница circulating MCAP на этой сети
     if fdv_total is not None and fdv_total <= limit:
         return R("mcap", PASS, f"Circulating неизвестен, но FDV по totalSupply {fmt_usd(fdv_total)} ≤ {fmt_usd(limit)} "
@@ -265,9 +272,15 @@ def f_utility(facts: dict, manual: list[dict], asset_class: str | None) -> dict:
     if link and not proto:
         return R("utility", UNKNOWN, "Связь с протоколом установлена, метрики ещё не получены", evidence=ev)
     if not websites and not socials:
-        return R("utility", FAIL, "Нет листинга DeFi-протокола, нет сайта и соцсетей в профилях DEX Screener/GeckoTerminal — "
-                 "признаки пустого токена без продукта", confidence="preliminary", evidence=ev,
-                 values={"checked": ["DefiLlama address/gecko_id", "DEX Screener info", "GeckoTerminal info" if gi else "GT info не запрашивался"]})
+        # Отсутствие сайта/соцсетей/листинга — НЕ доказательство отсутствия продукта (новый проект может быть ещё
+        # не проиндексирован). FAIL — только при независимом доказательстве (ручная оценка, токенизированная акция).
+        return R("utility", UNKNOWN, "Нет листинга DeFi-протокола, сайта и соцсетей в профилях DEX Screener/GeckoTerminal. "
+                 "Это не доказывает отсутствие продукта (проект может быть ещё не проиндексирован) — нужна ручная проверка",
+                 evidence=ev,
+                 values={"no_public_traces": True,
+                         "checked": ["DefiLlama address/gecko_id", "DEX Screener info", "GeckoTerminal info" if gi else "GT info не запрашивался"]},
+                 needs=["Найти официальный сайт/документацию/контракты продукта по адресу токена; при отсутствии продукта — "
+                        "внести ручную оценку утилити FAIL с доказательством"])
     possible = (facts.get("protocol_link") or {}).get("possible") or []
     for p in possible:
         ev.append({"label": "Возможный протокол (только совпадение тикера!)", "value": p["name"], "note": p["note"]})
@@ -300,16 +313,31 @@ def f_ecosystem(health: dict | None, s: dict) -> dict:
     if vol is not None and vol < s["chain_min_dex_volume_30d_usd"]:
         neg.append(f"DEX-объём 30д {fmt_usd(vol)}")
     growth = (health.get("tvl_change_30d") or 0) > 10 or (health.get("stables_change_30d") or 0) > 10
-    vals = {"negatives": neg, "growth": growth}
+    # проверенность активности: три независимые группы метрик
+    groups = {
+        "динамика TVL 30/90д": health.get("tvl_change_30d") is not None or ch90 is not None,
+        "стейблкоины": health.get("stables_usd") is not None or st90 is not None or health.get("stables_change_30d") is not None,
+        "экономическая активность (DEX-объём/комиссии)": vol is not None or health.get("fees_30d") is not None,
+    }
+    have = [k for k, v in groups.items() if v]
+    missing = [k for k, v in groups.items() if not v]
+    vals = {"negatives": neg, "growth": growth, "metric_groups_checked": have, "metric_groups_missing": missing}
     if len(neg) >= 2 and not growth:
         return R("ecosystem", FAIL, "Признаки заброшенной сети: " + "; ".join(neg), confidence="confirmed", evidence=ev, values=vals)
+    activity_ok = groups["экономическая активность (DEX-объём/комиссии)"]
+    trend_ok = groups["динамика TVL 30/90д"]
+    if not (activity_ok and trend_ok):
+        return R("ecosystem", UNKNOWN, f"Недостаточно метрик для оценки активности сети (TVL {fmt_usd(tvl)}); "
+                 f"нет данных: {', '.join(missing)}", evidence=ev, values=vals,
+                 needs=["Получить динамику TVL и DEX-объём/комиссии сети или оценить сеть вручную"])
     if neg:
         return R("ecosystem", PASS if growth else UNKNOWN,
                  ("Небольшая сеть с подтверждённым ростом: " if growth else "Смешанные сигналы: ") + "; ".join(neg),
                  confidence="preliminary", evidence=ev, values=vals,
                  needs=[] if growth else ["Оценить динамику сети вручную"])
-    return R("ecosystem", PASS, f"Сеть активна: TVL {fmt_usd(tvl)}, DEX-объём 30д {fmt_usd(vol)}", confidence="confirmed",
-             evidence=ev, values=vals)
+    conf = "confirmed" if not missing else "preliminary"
+    return R("ecosystem", PASS, f"Сеть активна: TVL {fmt_usd(tvl)}, DEX-объём 30д {fmt_usd(vol)}"
+             + (f" (не проверено: {', '.join(missing)})" if missing else ""), confidence=conf, evidence=ev, values=vals)
 
 
 def _p(v: float | None) -> str:

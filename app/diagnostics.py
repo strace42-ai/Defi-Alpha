@@ -13,7 +13,7 @@ def run(network: bool = False) -> dict:
     def add(name, ok, detail=""):
         checks.append({"name": name, "ok": bool(ok), "detail": detail})
 
-    add("Python ≥ 3.10", sys.version_info >= (3, 10), sys.version.split()[0])
+    add("Python ≥ 3.11", sys.version_info >= (3, 11), sys.version.split()[0])
     for mod, pkg in (("fastapi", "fastapi"), ("uvicorn", "uvicorn"), ("httpx", "httpx"), ("openpyxl", "openpyxl")):
         try:
             m = importlib.import_module(mod)

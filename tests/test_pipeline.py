@@ -198,7 +198,9 @@ def test_tokenomics_version_change_and_mint_vs_budget():
     # искусственные mint-события: 150 в gauge (бюджет 100) + 1000 команде (не эмиссия)
     for i, (to, amt) in enumerate([("0x00000000000000000000000000000000000000aa", 150), ("0x00000000000000000000000000000000000000bb", 1000)]):
         db.ex("INSERT INTO supply_events(token_uid,kind,tx_hash,log_index,block,ts,counterparty,amount_raw,amount) VALUES(?,?,?,?,?,?,?,?,?)",
-              (uid, "mint", f"0x{i}", i, 100 + i, "2026-10-02T00:00:00Z", to, str(amt), amt))
+              (uid, "mint", f"0x{i}", i, 100 + i, "2026-10-02T00:00:00Z", to, str(amt * 10 ** 18), amt))
+    # подтверждённые границы недели (первый блок с ts ≥ начала/конца недели)
+    db.set_progress(f"week_blocks:{uid}", dumps({"2026-10-01T00:00:00Z": {"block": 50}, "2026-10-08T00:00:00Z": {"block": 1000}}))
     an = onchain.supply_analytics(uid)
     w = an["budget_comparison"][0]
     assert w["minted_all"] == 1150 and w["minted_to_emission_contracts"] == 150 and w["over_budget"] is True
@@ -210,6 +212,7 @@ def test_budget_is_not_minted_amount():
     uid = _mk()
     db.ex("INSERT INTO tokenomics_versions(token_uid,version_label,is_current,params,entered_at) VALUES(?,?,?,?,?)",
           (uid, "v1", 1, dumps({"weekly_budgets": [{"week": 1, "start": "2026-10-01T00:00:00Z", "amount": 10_000_000}]}), now_iso()))
+    db.set_progress(f"week_blocks:{uid}", dumps({"2026-10-01T00:00:00Z": {"block": 1}, "2026-10-08T00:00:00Z": {"block": 9}}))
     an = onchain.supply_analytics(uid)
     assert an["budget_comparison"][0]["minted_all"] == 0 and an["daily"] == []
 

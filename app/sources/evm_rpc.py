@@ -73,8 +73,8 @@ class Rpc:
                 return None
             raise
 
-    def total_supply_raw(self, token: str) -> int | None:
-        r = self.eth_call(token, "0x18160ddd")
+    def total_supply_raw(self, token: str, block: str = "latest") -> int | None:
+        r = self.eth_call(token, "0x18160ddd", block)
         return int(r, 16) if r and r != "0x" else None
 
     def decimals(self, token: str) -> int | None:

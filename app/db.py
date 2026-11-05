@@ -139,7 +139,9 @@ CREATE TABLE IF NOT EXISTS tokenomics_versions (
 CREATE TABLE IF NOT EXISTS supply_events (
     token_uid TEXT NOT NULL, kind TEXT NOT NULL,      -- mint | burn
     tx_hash TEXT NOT NULL, log_index INTEGER NOT NULL,
-    block INTEGER, ts TEXT, counterparty TEXT, amount_raw TEXT, amount REAL,
+    block INTEGER, ts TEXT, ts_source TEXT,            -- ts_source: block (точное время блока) | interpolated
+    counterparty TEXT, amount_raw TEXT,                -- amount_raw: целые минимальные единицы (источник истины)
+    amount REAL,                                       -- только для отображения; в расчётах не используется
     PRIMARY KEY(token_uid, tx_hash, log_index)
 );
 CREATE INDEX IF NOT EXISTS ix_se_token ON supply_events(token_uid, block);
@@ -200,6 +202,11 @@ def get_conn() -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection | None = None) -> None:
     c = conn or get_conn()
     c.executescript(SCHEMA)
+    # миграции существующих баз
+    cols = {r[1] for r in c.execute("PRAGMA table_info(supply_events)").fetchall()}
+    if "ts_source" not in cols:
+        c.execute("ALTER TABLE supply_events ADD COLUMN ts_source TEXT")
+        c.execute("UPDATE supply_events SET ts_source='interpolated' WHERE ts IS NOT NULL")
     c.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('schema_version','1')")
     c.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('created_at',?)", (now_iso(),))
     c.commit()

@@ -358,14 +358,14 @@ def tokenomics_overview():
         "SELECT t.uid, t.symbol, t.chain, t.address_display, t.address, "
         "(SELECT COUNT(*) FROM tokenomics_versions v WHERE v.token_uid=t.uid) versions, "
         "(SELECT COUNT(*) FROM supply_events e WHERE e.token_uid=t.uid AND e.kind='mint') mints, "
-        "(SELECT SUM(amount) FROM supply_events e WHERE e.token_uid=t.uid AND e.kind='mint') minted, "
-        "(SELECT SUM(amount) FROM supply_events e WHERE e.token_uid=t.uid AND e.kind='burn') burned, t.last_onchain_at "
+        "t.last_onchain_at "
         "FROM tokens t WHERE t.uid IN (SELECT token_uid FROM tokenomics_versions) OR t.uid IN (SELECT token_uid FROM supply_events) "
         "OR t.last_onchain_at IS NOT NULL ORDER BY t.symbol"))
     for r in rows:
         f = loads(db.q1("SELECT facts FROM tokens WHERE uid=?", (r["uid"],))["facts"], {}) or {}
         oc = f.get("onchain") or {}
         r["total_supply"] = oc.get("total_supply")
+        r["minted"], r["burned"] = oc.get("minted"), oc.get("burned")  # из целочисленных сумм (onchain.raw_totals)
         r["reconciliation"] = oc.get("reconciliation")
         r["circulating"] = (f.get("circulating_official") or {}).get("value")
         r["max_supply"] = (f.get("max_supply") or {}).get("value")

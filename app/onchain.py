@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 from collections import defaultdict
+from decimal import Decimal, getcontext
 from typing import Any, Callable
 
 from . import db
@@ -24,6 +25,7 @@ from .sources.solana_rpc import SolanaRpc
 from .util import dumps, from_ts, iso, loads, now_iso, now_utc, parse_iso
 
 log = logging.getLogger("das.onchain")
+getcontext().prec = 80  # достаточно для uint256
 Progress = Callable[[str], None]
 
 
@@ -77,7 +79,6 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
         decimals = rpc.decimals(addr)
         if decimals is not None:
             db.ex("UPDATE tokens SET decimals=? WHERE uid=?", (decimals, uid))
-    dec = 10 ** (decimals if decimals is not None else 18)
     pkey_to, pkey_from = f"mint_scan_to:{uid}", f"mint_scan_from:{uid}"
     scanned_to = int(db.get_progress(pkey_to) or 0)
     scanned_from = int(db.get_progress(pkey_from) or 0)
@@ -93,10 +94,10 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
     step = chain.max_log_range
     errors = []
 
-    def fetch(a: int, b: int) -> int:
+    def fetch(a: int, b: int, force: bool = False) -> int:
         nonlocal calls, step
         n = 0
-        while a <= b and calls < max_calls and _time.monotonic() < deadline:
+        while a <= b and (force or (calls < max_calls and _time.monotonic() < deadline)):
             e = min(b, a + step - 1)
             try:
                 mints = rpc.transfer_logs(addr, a, e, mint=True)
@@ -119,12 +120,15 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
                     if len(topics) < 3:
                         continue  # нестандартное событие — не интерпретируем
                     cp = "0x" + (topics[2] if kind == "mint" else topics[1])[-40:]
-                    amount = int(lg.get("data") or "0x0", 16)
+                    data = lg.get("data") or "0x"
+                    if len(data) != 66:
+                        continue  # нестандартный Transfer — не интерпретируем
+                    amount = int(data, 16)  # целые минимальные единицы
                     db.get_conn().execute(
                         "INSERT OR IGNORE INTO supply_events(token_uid,kind,tx_hash,log_index,block,counterparty,amount_raw,amount) "
                         "VALUES(?,?,?,?,?,?,?,?)",
                         (uid, kind, lg["transactionHash"], int(lg["logIndex"], 16), int(lg["blockNumber"], 16), cp,
-                         str(amount), amount / dec))
+                         str(amount), float(to_decimal(amount, decimals))))  # amount — только для отображения
                     n += 1
             db.get_conn().commit()
             a = e + 1
@@ -135,77 +139,73 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
     db.set_progress(pkey_to, str(nxt))
     if progress:
         progress(f"ончейн {tok['symbol']}: блоки до {nxt} из {head}")
-    # временные метки: кусочно-линейная интерполяция по опорным блокам (≤ 12 запросов на все события)
-    rng = db.q1("SELECT MIN(block) lo, MAX(block) hi, COUNT(*) n FROM supply_events WHERE token_uid=? AND ts IS NULL", (uid,))
-    if rng and rng["n"]:
-        lo, hi = rng["lo"], rng["hi"]
-        k = 10 if hi - lo > 100_000 else 2
-        anchors = sorted({lo, hi} | {lo + (hi - lo) * i // k for i in range(1, k)})
-        refs = []
-        for bnum in anchors:
-            try:
-                t = rpc.block_timestamp(bnum)
-                if t:
-                    refs.append((bnum, t))
-            except SourceError:
-                pass
-        if refs:
-            if len(refs) == 1:
-                refs.append((head, head_ts))
-            blocks = [r["block"] for r in db.q("SELECT DISTINCT block FROM supply_events WHERE token_uid=? AND ts IS NULL", (uid,))]
-            c = db.get_conn()
-            for bnum in blocks:
-                j = 0
-                while j < len(refs) - 2 and refs[j + 1][0] < bnum:
-                    j += 1
-                (b0, t0), (b1, t1) = refs[j], refs[j + 1]
-                t = t0 + (bnum - b0) * ((t1 - t0) / (b1 - b0) if b1 != b0 else 0)
-                c.execute("UPDATE supply_events SET ts=? WHERE token_uid=? AND block=?", (iso(from_ts(t)), uid, bnum))
-            c.commit()
-    total_raw = rpc.total_supply_raw(addr)
-    total = total_raw / dec if total_raw is not None else None
-    if nxt > head and total is not None:
-        # догоняем блоки, появившиеся за время сканирования (блоки ~0.1 с), сразу после чтения totalSupply
+    # totalSupply() читается НА ТОМ ЖЕ БЛОКЕ, до которого получены логи — без гонки с новыми блоками
+    total_raw = None
+    total_block = None
+    supply_method = None
+    if nxt > head:
         try:
             head2 = rpc.block_number()
             if head2 >= nxt:
-                calls_left = max_calls - calls
-                if calls_left < 2:
-                    calls -= 2  # гарантируем один короткий догоняющий запрос
-                nxt = fetch(nxt, head2)
+                nxt = fetch(nxt, head2, force=True)
                 db.set_progress(pkey_to, str(nxt))
-                head = head2
+            head = nxt - 1
+            total_raw = rpc.total_supply_raw(addr, block=hex(head))
+            total_block, supply_method = head, f"eth_call totalSupply() на блоке {head}"
         except SourceError:
-            pass
+            total_raw = None
+    if total_raw is None:
+        try:
+            total_raw = rpc.total_supply_raw(addr)
+            supply_method = "eth_call totalSupply() на latest (блок логов может не совпадать)"
+        except SourceError as e:
+            errors.append(str(e))
+    head_ts = rpc.block_timestamp(head) or head_ts
+    _timestamps(rpc, uid, head, head_ts)
+    _week_boundaries(rpc, uid, head, head_ts)
+    total = to_decimal(total_raw, decimals) if total_raw is not None else None
     if total is not None:
-        db.observe("token", uid, "total_supply_rpc", total, source=f"rpc:{chain.key}", unit="tokens",
-                   confidence="confirmed", method="eth_call totalSupply()", verify_url=chain.explorer_token(addr))
-    agg = db.q1("SELECT SUM(CASE WHEN kind='mint' THEN amount ELSE 0 END) m, SUM(CASE WHEN kind='burn' THEN amount ELSE 0 END) b, "
-                "COUNT(*) n, MIN(block) fb FROM supply_events WHERE token_uid=?", (uid,))
-    minted, burned = agg["m"] or 0.0, agg["b"] or 0.0
-    reconstructed = minted - burned
+        db.observe("token", uid, "total_supply_rpc", float(total), source=f"rpc:{chain.key}", unit="tokens",
+                   confidence="confirmed", method=supply_method, verify_url=chain.explorer_token(addr))
+    tot = raw_totals(uid)
+    reconstructed_raw = tot["minted_raw"] - tot["burned_raw"]
     recon = None
-    if total is not None and nxt <= head:
-        recon = {"total_supply": total, "reconstructed": reconstructed, "diff": total - reconstructed, "matches": None,
+    if total_raw is not None and nxt <= head:
+        recon = {"total_supply_raw": str(total_raw), "reconstructed_raw": str(reconstructed_raw), "matches": None,
+                 "total_supply": float(total), "reconstructed": float(to_decimal(reconstructed_raw, decimals)),
                  "note": f"сканирование не завершено (обработано до блока {nxt:,} из {head:,}) — сверка будет выполнена после "
                          "завершения; продолжится при следующем обновлении"}
-    elif total is not None:
-        diff = total - reconstructed
-        tol = max(1e-5 * total, 1e-9)  # допуск 0.001%: гонка между чтением totalSupply и последним блоком логов
-        recon = {"total_supply": total, "reconstructed": reconstructed, "diff": diff, "tolerance": tol,
-                 "matches": abs(diff) <= tol,
-                 "note": ("история предложения сходится с totalSupply() — стандартная модель Transfer подтверждена"
-                          if abs(diff) <= tol else
-                          f"НЕ сходится на {diff:,.2f}: часть mint раньше начала сканирования (блок {scanned_from}) "
-                          "или контракт использует нестандартную модель событий")}
+    elif total_raw is not None:
+        rc = reconcile(total_raw, reconstructed_raw)
+        recon = {"total_supply_raw": str(total_raw), "reconstructed_raw": str(reconstructed_raw), "diff_raw": str(rc["diff_raw"]),
+                 "matches": rc["exact"], "at_block": total_block, "method": supply_method,
+                 "total_supply": float(total), "reconstructed": float(to_decimal(reconstructed_raw, decimals)),
+                 "diff": float(to_decimal(rc["diff_raw"], decimals)),
+                 "note": (f"точное совпадение в минимальных единицах: Σmint − Σburn = totalSupply() = {total_raw}"
+                          + (f" (на блоке {total_block})" if total_block else "")
+                          if rc["exact"] else
+                          f"НЕ сходится на {rc['diff_raw']} мин. единиц ({to_decimal(rc['diff_raw'], decimals)} токенов): "
+                          f"часть mint раньше начала сканирования (блок {scanned_from}), гонка чтения на latest "
+                          "или нестандартная модель событий")}
     first = db.q1("SELECT * FROM supply_events WHERE token_uid=? AND kind='mint' ORDER BY block, log_index LIMIT 1", (uid,))
+    first_info = None
+    if first and recon and recon.get("matches"):
+        ts_exact = rpc.block_timestamp(first["block"])
+        if ts_exact:
+            db.ex("UPDATE supply_events SET ts=?, ts_source='block' WHERE token_uid=? AND block=?",
+                  (iso(from_ts(ts_exact)), uid, first["block"]))
+        first_info = {"block": first["block"], "ts": iso(from_ts(ts_exact)) if ts_exact else first["ts"],
+                      "ts_source": "block" if ts_exact else first["ts_source"], "tx": first["tx_hash"]}
     out = {"scanned_from_block": scanned_from, "scanned_to_block": nxt, "head": head, "complete_to_head": nxt > head,
-           "events": agg["n"], "minted": minted, "burned": burned, "total_supply": total,
+           "events": tot["events"], "minted_raw": str(tot["minted_raw"]), "burned_raw": str(tot["burned_raw"]),
+           "minted": float(to_decimal(tot["minted_raw"], decimals)), "burned": float(to_decimal(tot["burned_raw"], decimals)),
+           "decimals": decimals, "total_supply": float(total) if total is not None else None,
+           "total_supply_raw": str(total_raw) if total_raw is not None else None,
            "reconciliation": recon, "errors": errors, "at": now_iso(),
-           "first_mint": {"block": first["block"], "ts": first["ts"], "tx": first["tx_hash"]} if first and recon and recon.get("matches") else None,
-           "first_mint_note": None if (recon and recon.get("matches")) else "первый mint не установлен: сканирование не дошло до начала"}
-    # рекурсивно дотягиваем начало, если не сходится и есть бюджет
-    if recon and recon["matches"] is False and recon["diff"] > 0 and calls < max_calls and scanned_from > 1:
+           "first_mint": first_info,
+           "first_mint_note": None if first_info else "первый mint не установлен: сканирование не дошло до начала"}
+    # дотягиваем начало, если не сходится (минтов не хватает) и есть бюджет
+    if recon and recon["matches"] is False and int(recon["diff_raw"]) > 0 and calls < max_calls and scanned_from > 1:
         new_from = max(1, scanned_from - step * max(1, (max_calls - calls) // 2))
         got_to = fetch(new_from, scanned_from - 1)
         if got_to >= scanned_from:
@@ -215,51 +215,185 @@ def scan_supply_events(uid: str, max_calls: int = 40, progress: Progress | None 
     return out
 
 
-def supply_analytics(uid: str) -> dict:
-    """Дневная эмиссия, получатели с метками, сравнение с бюджетом текущей версии токеномики."""
-    tok = db.q1("SELECT chain FROM tokens WHERE uid=?", (uid,))
-    labels = _labels(tok["chain"])
-    rows = db.rows_to_dicts(db.q("SELECT kind, ts, counterparty, amount, tx_hash, block FROM supply_events WHERE token_uid=? ORDER BY block", (uid,)))
-    daily: dict[str, dict] = defaultdict(lambda: {"mint": 0.0, "burn": 0.0})
-    recips: dict[str, float] = defaultdict(float)
-    for r in rows:
-        d = (r["ts"] or "")[:10] or "?"
-        daily[d][r["kind"]] += r["amount"] or 0
+# ------------------------------------------------------------------ целочисленная арифметика
+def to_decimal(raw: int | None, decimals: int | None) -> Decimal | None:
+    if raw is None:
+        return None
+    return Decimal(int(raw)) / (Decimal(10) ** int(decimals if decimals is not None else 18))
+
+
+def raw_totals(uid: str) -> dict:
+    """Суммы в целых минимальных единицах (без float)."""
+    minted = burned = n = 0
+    for r in db.q("SELECT kind, amount_raw FROM supply_events WHERE token_uid=?", (uid,)):
+        v = int(r["amount_raw"])
+        n += 1
         if r["kind"] == "mint":
-            recips[r["counterparty"]] += r["amount"] or 0
-    cum = 0.0
+            minted += v
+        else:
+            burned += v
+    return {"minted_raw": minted, "burned_raw": burned, "events": n}
+
+
+def reconcile(total_raw: int, reconstructed_raw: int) -> dict:
+    d = int(total_raw) - int(reconstructed_raw)
+    return {"exact": d == 0, "diff_raw": d}
+
+
+# ------------------------------------------------------------------ время блоков
+def exact_block_at(rpc: Any, ts: int, head: int, head_ts: int) -> int:
+    """Наименьший блок с timestamp ≥ ts (несколько блоков могут иметь одну секунду). Проверено по соседнему блоку."""
+    lo = find_block_by_time(rpc, ts, head, head_ts)
+    t = rpc.block_timestamp(lo)
+    step = 1000
+    while t is not None and t >= ts and lo > 1:  # инвариант: ts(lo) < ts
+        lo = max(1, lo - step)
+        step *= 2
+        t = rpc.block_timestamp(lo)
+    hi = min(head, lo + 1000)
+    step = 1000
+    th = rpc.block_timestamp(hi)
+    while th is not None and th < ts and hi < head:  # инвариант: ts(hi) ≥ ts
+        lo = hi
+        hi = min(head, hi + step)
+        step *= 2
+        th = rpc.block_timestamp(hi)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if rpc.block_timestamp(mid) >= ts:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def _timestamps(rpc: Any, uid: str, head: int, head_ts: int) -> None:
+    """Опорные блоки получают ТОЧНОЕ время блока (ts_source=block), остальные — интерполяцию (ts_source=interpolated)."""
+    rng = db.q1("SELECT MIN(block) lo, MAX(block) hi, COUNT(*) n FROM supply_events WHERE token_uid=? AND ts IS NULL", (uid,))
+    if not rng or not rng["n"]:
+        return
+    lo, hi = rng["lo"], rng["hi"]
+    k = 10 if hi - lo > 100_000 else 2
+    anchors = sorted({lo, hi} | {lo + (hi - lo) * i // k for i in range(1, k)})
+    refs = []
+    for bnum in anchors:
+        try:
+            t = rpc.block_timestamp(bnum)
+            if t:
+                refs.append((bnum, t))
+        except SourceError:
+            pass
+    if not refs:
+        return
+    if len(refs) == 1:
+        refs.append((head, head_ts))
+    exact = dict(refs)
+    c = db.get_conn()
+    for (bnum,) in c.execute("SELECT DISTINCT block FROM supply_events WHERE token_uid=? AND ts IS NULL", (uid,)).fetchall():
+        if bnum in exact:
+            c.execute("UPDATE supply_events SET ts=?, ts_source='block' WHERE token_uid=? AND block=?", (iso(from_ts(exact[bnum])), uid, bnum))
+            continue
+        j = 0
+        while j < len(refs) - 2 and refs[j + 1][0] < bnum:
+            j += 1
+        (b0, t0), (b1, t1) = refs[j], refs[j + 1]
+        t = t0 + (bnum - b0) * ((t1 - t0) / (b1 - b0) if b1 != b0 else 0)
+        c.execute("UPDATE supply_events SET ts=?, ts_source='interpolated' WHERE token_uid=? AND block=?", (iso(from_ts(t)), uid, bnum))
+    c.commit()
+
+
+def _week_boundaries(rpc: Any, uid: str, head: int, head_ts: int) -> None:
+    """Для каждой границы недельного бюджета — точный первый блок с timestamp ≥ границы."""
+    tn = current_tokenomics(uid)
+    if not tn or not tn["params"].get("weekly_budgets"):
+        return
+    key = f"week_blocks:{uid}"
+    known = loads(db.get_progress(key), {}) or {}
+    changed = False
+    for w in tn["params"]["weekly_budgets"]:
+        st = parse_iso(w.get("start"))
+        if not st:
+            continue
+        for bound in (st, st + _dt.timedelta(days=7)):
+            k = iso(bound)
+            if k in known or bound.timestamp() > head_ts:
+                continue
+            try:
+                b = exact_block_at(rpc, int(bound.timestamp()), head, head_ts)
+                tb, tp = rpc.block_timestamp(b), rpc.block_timestamp(b - 1)
+            except SourceError:
+                continue
+            if tb is not None and tp is not None and tp < bound.timestamp() <= tb:
+                known[k] = {"block": b, "ts": iso(from_ts(tb)), "prev_block_ts": iso(from_ts(tp))}
+                changed = True
+    if changed:
+        db.set_progress(key, dumps(known))
+
+
+def supply_analytics(uid: str) -> dict:
+    """Дневная эмиссия, получатели с метками, сравнение с бюджетом. Все суммы — в целых минимальных единицах."""
+    tok = db.q1("SELECT chain, decimals FROM tokens WHERE uid=?", (uid,))
+    decimals = tok["decimals"] if tok["decimals"] is not None else 18
+    labels = _labels(tok["chain"])
+    rows = db.rows_to_dicts(db.q("SELECT kind, ts, ts_source, counterparty, amount_raw, tx_hash, block FROM supply_events "
+                                 "WHERE token_uid=? ORDER BY block, log_index", (uid,)))
+    daily: dict[str, dict] = defaultdict(lambda: {"mint": 0, "burn": 0})
+    recips: dict[str, int] = defaultdict(int)
+    for r in rows:
+        v = int(r["amount_raw"])
+        d = (r["ts"] or "")[:10] or "?"
+        daily[d][r["kind"]] += v
+        if r["kind"] == "mint":
+            recips[r["counterparty"]] += v
+    D = lambda raw: float(to_decimal(raw, decimals))
+    cum = 0
     series = []
     for d in sorted(k for k in daily if k != "?"):
         cum += daily[d]["mint"] - daily[d]["burn"]
-        series.append({"date": d, "mint": daily[d]["mint"], "burn": daily[d]["burn"], "cumulative": cum})
+        series.append({"date": d, "mint": D(daily[d]["mint"]), "burn": D(daily[d]["burn"]), "cumulative": D(cum),
+                       "mint_raw": str(daily[d]["mint"]), "cumulative_raw": str(cum)})
     top = sorted(recips.items(), key=lambda x: -x[1])[:20]
-    top_l = [{"address": a, "amount": v, "label": (labels.get(a) or {}).get("label"),
+    top_l = [{"address": a, "amount": D(v), "amount_raw": str(v), "label": (labels.get(a) or {}).get("label"),
               "kind": (labels.get(a) or {}).get("kind"), "label_source": (labels.get(a) or {}).get("source_url"),
               "note": None if labels.get(a) else "неизвестный адрес — не считать командой без доказательств"} for a, v in top]
-    # бюджет: params.weekly_budgets = [{"week": 1, "start": "...", "amount": ...}, ...]
     tn = current_tokenomics(uid)
+    bounds = loads(db.get_progress(f"week_blocks:{uid}"), {}) or {}
     budget_cmp = []
     if tn and tn["params"].get("weekly_budgets"):
+        emis_kinds = set(tn["params"].get("emission_recipient_kinds") or ["gauge", "emissions", "minter"])
+        has_labels = any((lb.get("kind") in emis_kinds) for lb in labels.values())
         for w in tn["params"]["weekly_budgets"]:
             st = parse_iso(w.get("start"))
             if not st:
                 continue
             en = st + _dt.timedelta(days=7)
-            emis_kinds = set(tn["params"].get("emission_recipient_kinds") or ["gauge", "emissions", "minter"])
-            minted_all = sum(r["amount"] or 0 for r in rows if r["kind"] == "mint" and r["ts"] and st <= parse_iso(r["ts"]) < en)
-            minted_emis = sum(r["amount"] or 0 for r in rows if r["kind"] == "mint" and r["ts"] and st <= parse_iso(r["ts"]) < en
-                              and (labels.get(r["counterparty"]) or {}).get("kind") in emis_kinds)
             in_progress = en > now_utc()
-            has_labels = any((lb.get("kind") in emis_kinds) for lb in labels.values())
-            budget_cmp.append({"week": w.get("week"), "start": w.get("start"), "budget": w.get("amount"),
-                               "minted_all": minted_all, "minted_to_emission_contracts": minted_emis,
-                               "in_progress": in_progress,
-                               "over_budget": (None if not has_labels else
-                                               (not in_progress) and w.get("amount") is not None and minted_emis > 1.1 * float(w["amount"])),
-                               "labels_missing": not has_labels,
-                               "note": "бюджет — потолок эмиссии, а не выпущенное количество; "
-                                       "minted_all включает все mint (команда, ликвидность, клеймы)"})
-    return {"daily": series[-180:], "top_recipients": top_l, "budget_comparison": budget_cmp,
+            b0 = (bounds.get(iso(st)) or {}).get("block")
+            b1 = (bounds.get(iso(en)) or {}).get("block")
+            confirmed = b0 is not None and (b1 is not None or in_progress)
+            if confirmed:
+                sel = [r for r in rows if r["kind"] == "mint" and r["block"] >= b0 and (b1 is None or r["block"] < b1)]
+            else:
+                sel = []
+            all_raw = sum(int(r["amount_raw"]) for r in sel)
+            emis_raw = sum(int(r["amount_raw"]) for r in sel if (labels.get(r["counterparty"]) or {}).get("kind") in emis_kinds)
+            budget_raw = int(Decimal(str(w["amount"])) * (Decimal(10) ** decimals)) if w.get("amount") is not None else None
+            if not confirmed or not has_labels or budget_raw is None or in_progress:
+                over = None
+            else:
+                over = emis_raw * 10 > budget_raw * 11  # > 110% бюджета, целочисленно
+            budget_cmp.append({
+                "week": w.get("week"), "start": w.get("start"), "budget": w.get("amount"),
+                "budget_raw": budget_raw, "start_block": b0, "end_block": b1,
+                "boundary_source": "block_timestamps" if confirmed else None,
+                "minted_all_raw": all_raw if confirmed else None, "minted_to_emission_contracts_raw": emis_raw if confirmed else None,
+                "minted_all": D(all_raw) if confirmed else None, "minted_to_emission_contracts": D(emis_raw) if confirmed else None,
+                "in_progress": in_progress, "over_budget": None if in_progress else over, "labels_missing": not has_labels,
+                "note": ("границы недели — точные блоки по timestamp блоков; " if confirmed else
+                         "границы недели не подтверждены timestamp блоков — сравнение не выполняется; ")
+                        + "бюджет — потолок эмиссии, а не выпущенное количество; minted_all включает все mint"})
+    return {"daily": series[-180:], "daily_ts_note": "даты по дням — интерполяция времени между опорными блоками",
+            "top_recipients": top_l, "budget_comparison": budget_cmp, "decimals": decimals,
             "tokenomics_version": {k: tn.get(k) for k in ("id", "version_label", "published_at", "source_url", "source_type")} if tn else None}
 
 
