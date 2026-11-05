@@ -770,6 +770,11 @@ def diag(network: bool = False):
 app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
 
+from .api_analytics import router as _analytics_router  # noqa: E402 — 2.1: аналитика (выключена по умолчанию)
+
+app.include_router(_analytics_router)
+
+
 @app.get("/")
 def index():
     return FileResponse(str(WEB / "index.html"))

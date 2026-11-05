@@ -90,6 +90,9 @@ def breaker_status() -> dict:
 
 def client() -> httpx.Client:
     global _client
+    from .analytics import network_forbidden
+    if network_forbidden():  # 2.1: аналитика этапа 1 работает только с накопленными данными и не расходует лимиты источников
+        raise RuntimeError("сетевой запрос из аналитического модуля запрещён (этап 1 использует только накопленные данные)")
     if _client is None:
         _client = httpx.Client(timeout=httpx.Timeout(30.0, connect=15.0),
                                headers={"User-Agent": USER_AGENT}, follow_redirects=True)

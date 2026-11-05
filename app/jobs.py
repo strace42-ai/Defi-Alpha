@@ -29,10 +29,11 @@ JOB_NAMES = {"scan": "Сканирование", "discover": "Новые пул�
              "deep": "Углублённый анализ", "fund": "Фундаментал", "onchain": "Ончейн", "cg": "CoinGecko",
              "chain_health": "Метрики сети", "refresh": "Обновление кандидатов", "fundamentals": "Фундаментал (все)",
              "token": "Анализ токена", "backup": "Резервная копия", "weekly": "Недельный снимок",
-             "reevaluate": "Пересчёт фильтров", "protocols": "Список протоколов"}
+             "reevaluate": "Пересчёт фильтров", "protocols": "Список протоколов", "analytics": "Аналитика 2.1"}
 LANE_OF = {"quotes": "fast", "discover": "main", "backfill": "main", "deep": "main", "fund": "main", "chain_health": "main",
            "protocols": "main", "scan": "main", "refresh": "main", "fundamentals": "main", "weekly": "main", "token": "main",
-           "onchain": "chain", "cg": "aux", "backup": "aux", "reevaluate": "aux"}
+           "onchain": "chain", "cg": "aux", "backup": "aux", "reevaluate": "aux",
+           "analytics": "analytics"}  # 2.1: отдельная очередь — аналитика не занимает очереди сбора данных
 NO_LOG = {"quotes"}  # частые задачи не засоряют журнал заданий
 SOURCES_OF = {"quotes": ["dexscreener"], "discover": ["geckoterminal"], "backfill": ["geckoterminal", "defillama"],
               "deep": ["geckoterminal"], "fund": ["defillama"], "chain_health": ["defillama"], "cg": ["coingecko"],
@@ -113,7 +114,7 @@ def _safe_job_update(sql: str, params: tuple) -> None:
 class Runner:
     def __init__(self):
         self.stop_flag = threading.Event()
-        self.lanes = {n: Lane(n, self) for n in ("fast", "main", "chain", "aux")}
+        self.lanes = {n: Lane(n, self) for n in ("fast", "main", "chain", "aux", "analytics")}
         self.sched = threading.Thread(target=self._sched_loop, name="das-scheduler", daemon=True)
         self._seq = 0
         self._seq_lock = threading.Lock()
@@ -132,6 +133,25 @@ class Runner:
 
     def stop(self) -> None:
         self.stop_flag.set()
+
+    def drop_queued(self, lane_name: str) -> int:
+        """Убрать из очереди ещё не начатые задачи (выключение аналитики). Выполняемая задача завершится сама."""
+        l = self.lanes.get(lane_name)
+        if l is None:
+            return 0
+        n = 0
+        with l.lock:
+            while True:
+                try:
+                    l.q.get_nowait()
+                    n += 1
+                except queue.Empty:
+                    break
+            ids = [j["id"] for j in l.keys.values() if j.get("id")]
+            l.keys.clear()
+        for jid in ids:
+            _safe_job_update("UPDATE jobs SET status='cancelled', finished_at=? WHERE id=? AND status='queued'", (now_iso(), jid))
+        return n
 
     @staticmethod
     def key(job: str, kw: dict) -> str:
@@ -230,6 +250,11 @@ class Runner:
         lbk = parse_iso(last_b)
         if lbk is None or (now_utc() - lbk).total_seconds() >= int(s["intervals_min"]["backup"]) * 60:
             sub("backup", 5)
+        try:  # 2.1: аналитика (выключена по умолчанию); любой её сбой не влияет на планирование сбора данных
+            from . import analytics
+            analytics.plan(self, sub)
+        except Exception:  # noqa: BLE001
+            db.log_error("analytics.plan", traceback.format_exc()[-1500:])
         return put
 
     def _sched_loop(self) -> None:
@@ -397,6 +422,11 @@ def job_backup(prog) -> dict:
     return {"path": str(backup.make_backup())}
 
 
+def t_analytics(prog, module: str, uid: str | None = None, force: bool = False) -> dict:
+    from . import analytics
+    return analytics.task(prog, module, uid=uid, force=force)
+
+
 def job_reevaluate(prog) -> dict:
     rows = db.q("SELECT uid FROM tokens")
     for i, r in enumerate(rows):
@@ -410,6 +440,7 @@ TASKS: dict[str, Callable] = {
     "discover": t_discover, "backfill": t_backfill, "quotes": t_quotes, "deep": t_deep, "fund": t_fund, "onchain": t_onchain,
     "cg": t_cg, "chain_health": t_chain_health, "protocols": t_protocols, "scan": job_scan, "refresh": job_refresh,
     "fundamentals": job_fundamentals, "weekly": job_weekly, "token": job_token, "backup": job_backup, "reevaluate": job_reevaluate,
+    "analytics": t_analytics,
 }
 JOBS = TASKS  # совместимость
 

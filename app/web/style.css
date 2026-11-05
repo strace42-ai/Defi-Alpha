@@ -90,3 +90,9 @@ details > summary { cursor: pointer; color: var(--text-secondary); }
 .fb.source_down { border-color: var(--bad); color: var(--bad); }
 .fb.conflict { border-color: var(--warn); color: var(--warn); }
 #liveNote { color: var(--warn); }
+/* 2.1: уровни доказательности аналитики */
+.fb.ev-c { border-color: var(--good); color: var(--good); }
+.fb.ev-r { border-color: var(--accent); color: var(--accent); }
+.fb.ev-e { border-color: var(--warn); color: var(--warn); }
+.fb.ev-u { color: var(--text-muted); }
+.fb.ev-bad { border-color: var(--bad); color: var(--bad); }

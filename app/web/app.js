@@ -80,7 +80,7 @@ const fmtUsdPlain = v => { const a = Math.abs(v); return a >= 1e6 ? "$" + (v / 1
 const fmtNum = v => { const a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed(1) + "M" : a >= 1e3 ? (v / 1e3).toFixed(0) + "K" : Number(v).toPrecision(3); };
 
 /* ---------- живые обновления ---------- */
-const LANE_NAMES = { fast: "котировки", main: "обнаружение/анализ", chain: "ончейн", aux: "CoinGecko/сервис" };
+const LANE_NAMES = { fast: "котировки", main: "обнаружение/анализ", chain: "ончейн", aux: "CoinGecko/сервис", analytics: "аналитика 2.1" };
 let LIVE = { since: "", lastSoft: 0, tokenUpdated: null, tokenEvents: null, busy: false };
 // незаписанный ввод пользователя: форма помечается «грязной» и не перерисовывается автоматически
 document.addEventListener("input", e => { const f = e.target.closest("form"); if (f) f.dataset.dirty = "1"; });
@@ -149,7 +149,7 @@ async function render(soft = false) {
   document.querySelectorAll("#nav a").forEach(a => a.classList.toggle("active", a.dataset.r === r.name || (r.name === "token" && a.dataset.r === "scanner")));
   const v = $("#view");
   try {
-    const fn = { setup: vSetup, dashboard: vDashboard, scanner: vScanner, token: vToken, review: vReview, watchlist: vWatch, hidden: vHidden, tokenomics: vTokenomics, alerts: vAlerts, sources: vSources, settings: vSettings }[r.name] || vDashboard;
+    const fn = { setup: vSetup, dashboard: vDashboard, scanner: vScanner, token: vToken, review: vReview, watchlist: vWatch, hidden: vHidden, tokenomics: vTokenomics, alerts: vAlerts, sources: vSources, settings: vSettings, ...(window.EXTRA_VIEWS || {}) }[r.name] || vDashboard;
     if (r.name === "settings" && soft) return;  // настройки — только по действию пользователя
     if (!soft || !["scanner", "token"].includes(r.name)) clearCharts();
     await fn(v, r.arg, soft);
@@ -368,7 +368,8 @@ async function vToken(v, uid, soft) {
   ${d.hidden ? `<div class="warnbox">Скрыт вами из лучших кандидатов ${dt(d.hidden.hidden_at)}${d.hidden.until ? " до " + dt(d.hidden.until) : ""}${d.hidden.reason ? ": " + esc(d.hidden.reason) : ""}</div>` : ""}
   <div class="kv" style="max-width:760px"><div>Цена</div><div>${usd(r.price)}${(f.price_check || {}).confidence ? ` <span class="small muted">достоверность: ${esc(f.price_check.confidence)}</span>` : ""}</div>
     <div>MCAP</div><div class="mcapcell" data-uid="${esc(uid)}">${mcapText(r)} ${mcapBadge(r.mcap_type, r.mcap == null && r.mcap_high != null)} <span class="small muted">нажмите — расчёт и источники</span></div>
-    <div>Ликвидность (качественные пулы)</div><div>${usd(r.liquidity)}</div></div>`;
+    <div>Ликвидность (качественные пулы)</div><div>${usd(r.liquidity)}</div></div>
+  <div id="anSummary" data-uid="${esc(uid)}">${(window.analyticsCardCache || {})[uid] || ""}</div>`;
   const tabNames = ["Фильтры", "Метрики", "Фундаментал", "Токеномика", "Безопасность", "Оценка", "Пулы", "История", "Ручные данные"];
   if (soft && $("#tokHead") && $("#tokHead").dataset.uid === uid) {
     $("#tokHead").innerHTML = head();
@@ -397,6 +398,7 @@ async function vToken(v, uid, soft) {
   const show = i => { TOKEN_TAB[uid] = i; clearCharts(); document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", +b.dataset.t === i)); $("#tabc").innerHTML = tabs[i](); afterTab(i, d, f, uid); };
   document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => show(+b.dataset.t));
   show(TOKEN_TAB[uid] || 0);
+  if (window.tokenAnalyticsSummary) window.tokenAnalyticsSummary(uid);  // 2.1: сводка аналитики (если модули включены)
 }
 function tabsFn(d, f, r, p, oc, sc, uid, fOrder) {
   const ex = d.explorer_addr ? a => link(d.explorer_addr.replace("{address}", a), short(a)) : a => esc(short(a));
