@@ -7,10 +7,14 @@ from pathlib import Path
 from . import config, db
 from .util import now_utc
 
-BACKUP_DIR = config.DATA_DIR / "backups"
+
+def _dir() -> Path:
+    """Папка копий определяется в момент вызова (а не при импорте модуля) — по текущей папке данных."""
+    return config.DATA_DIR / "backups"
 
 
 def make_backup(label: str = "auto") -> Path:
+    BACKUP_DIR = _dir()
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     dst = BACKUP_DIR / f"scanner-{now_utc().strftime('%Y%m%d-%H%M%S')}-{label}.db"
     src = db.connect(db.DB_PATH)
@@ -30,6 +34,7 @@ def make_backup(label: str = "auto") -> Path:
 
 
 def list_backups() -> list[dict]:
+    BACKUP_DIR = _dir()
     if not BACKUP_DIR.exists():
         return []
     return [{"name": f.name, "size": f.stat().st_size} for f in sorted(BACKUP_DIR.glob("scanner-*.db"), reverse=True)]

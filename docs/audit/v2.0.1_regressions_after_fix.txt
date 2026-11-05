@@ -1,5 +1,5 @@
 Код: v2.0.1 (рабочая копия), тесты: tests/test_v201_regressions.py
-.........................                                                [100%]
+..........................                                               [100%]
 ==================================== PASSES ====================================
 =========================== short test summary info ============================
 PASSED tests/test_v201_regressions.py::test_p01_failed_status_write_does_not_leave_open_transaction
@@ -27,7 +27,8 @@ PASSED tests/test_v201_regressions.py::test_p01_malformed_auxiliary_response_doe
 PASSED tests/test_v201_regressions.py::test_p01_backup_does_not_block_writers
 PASSED tests/test_v201_regressions.py::test_p04_existing_small_db_reports_richer_installation
 PASSED tests/test_v201_regressions.py::test_p01_interrupted_onchain_job_timestamps_are_filled_on_next_pass
-25 passed in 2.69s
+PASSED tests/test_v201_regressions.py::test_tests_and_selfcheck_never_write_into_real_data_folder
+26 passed in 2.71s
 
 Полный набор:
-114 passed in 6.58s
+115 passed in 6.02s

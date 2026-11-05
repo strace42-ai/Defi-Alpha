@@ -409,3 +409,11 @@ def test_p01_interrupted_onchain_job_timestamps_are_filled_on_next_pass():
     exact = db.q1("SELECT COUNT(*) n FROM supply_events WHERE token_uid=? AND ts_source='block'", (uid,))["n"]
     assert left == 0 and exact >= 2
     assert db.q1("SELECT COUNT(*) n FROM supply_events WHERE token_uid=?", (uid,))["n"] == len(rows)
+
+
+def test_tests_and_selfcheck_never_write_into_real_data_folder():
+    """selfcheck запускает автотесты на компьютере пользователя: тестовые копии не должны попадать в его data\\backups."""
+    from app import backup
+    p = backup.make_backup(label="test")
+    assert Path(p).resolve().is_relative_to(Path(config.DATA_DIR).resolve())
+    assert not (Path(__file__).resolve().parent.parent / "data" / "backups" / Path(p).name).exists()
